@@ -1,4 +1,5 @@
 import os
+import re
 from dotenv import load_dotenv  # Import the dotenv library
 import requests
 import xml.etree.ElementTree as ET
@@ -50,7 +51,7 @@ topics = {
     "KOROŠKA": 6,
     "SAVINJSKA": 8,
     "ZASAVSKA": 10,
-    "SPODNJEPOSAVSKA": 12,
+    "POSAVSKA": 12,
     "OSREDNJESLOVENSKA": 16,
     "JUGOVZHODNA SLOVENIJA": 14,
     "GORENJSKA": 18,
@@ -85,7 +86,7 @@ topics = {
 keywords_map = {
     "Gore": ["gorah", "gore", "Triglav", "alpe", "Karavanke", "sestopu", "zdrs"],
     "Športne aktivnosti": ["adrenalinske", "adrenalinskih", "športnih", "šport", "športu", "rekreativnih"],
-    "Nevarne snovi": ["snovmi", "snovi", "nevarne", "nevarnimi"]
+    "Nevarne snovi": ["snovmi", "snovi", "nevarne", "nevarnimi", "strupene", "strupenimi"]
 }
 
 # Defining the RSS feed URL and incident details URL base
@@ -175,9 +176,9 @@ emoji_mapping = {
     "nevarnimi": ["⚠️"],
     "požar": ["🔥"],
     "eksplozija": ["💥"],
-    "NUS": ["⏲️","💣"],
+    "nus": ["⏲️","💣"],
     "prometna": ["🚦"],
-    "nesreča": ["🚑", "⚠️"],
+    "nesreča": ["🚗", "🚨"],
     "epidemija": ["🦠", "⚕️"],
     "nestanovanjskih": ["🏬"],
     "stanovanjskih": ["🏘️"],
@@ -187,12 +188,12 @@ emoji_mapping = {
     "gorah": ["🏔️"],
     "zabojnikih": ["🗑️"],
     "gobarjenje": ["🍄"],
-
 }
 
 def get_emojis_for_keywords(*args):
     """
     Function to get the emojis based on keywords present in the given text fields.
+    Uses regular expressions to find exact matches.
 
     Parameters:
         *args: Multiple text fields (dogodekNaziv, besedilo, intervencijaVrstaNaziv).
@@ -204,13 +205,14 @@ def get_emojis_for_keywords(*args):
 
     # Iterate over all given text fields
     for text in args:
-        # Check each keyword in the text and add corresponding emojis to the set
+        # Check each keyword in the text and add corresponding emojis to the set using exact word boundaries
         for keyword, emojis in emoji_mapping.items():
-            if keyword.lower() in text.lower():
-                matched_emojis.update(emojis)
+            # Use word boundaries (\b) to match exact words only, ignoring case
+            if re.search(rf'\b{re.escape(keyword.lower())}\b', text.lower()):
+                matched_emojis.update(emojis if isinstance(emojis, list) else [emojis])
 
     # Combine matched emojis into a single string
-    return ''.join(matched_emojis) if matched_emojis else "."  # Use dot . if no keyword is matched
+    return ''.join(matched_emojis) if matched_emojis else "."
 
 # Headers for requests
 headers = {
@@ -723,7 +725,7 @@ async def post_incident_to_topic(bot, incident, topic_id):
             await retry_send_message(bot, TELEGRAM_GROUP_ID, message, message_thread_id=topic_id)
 
 # Function to fetch and post new incidents automatically every 3 minutes
-async def auto_fetch_and_post(context: CallbackContext, initial_run=True):
+async def auto_fetch_and_post(context: CallbackContext, initial_run=False):
     global fetched_incidents
     
     logger.info("Checking for new incidents in the RSS feed...")  # Log the start of the check
