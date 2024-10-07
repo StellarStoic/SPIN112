@@ -32,7 +32,7 @@ TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_GROUP_ID = os.getenv('TELEGRAM_GROUP_ID')
 
 # Maximum number of reports to store in the JSON files
-MAX_STORED_REPORTS = 10
+MAX_STORED_REPORTS = 1000
 
 # Verify if the variables are loaded correctly
 if not TELEGRAM_BOT_TOKEN or not TELEGRAM_GROUP_ID:
@@ -89,8 +89,9 @@ keywords_map = {
 }
 
 # Defining the RSS feed URL and incident details URL base
-# rss_feed_url = "https://spin3.sos112.si/api/javno/ODRSS/false" # Samo preverjene intervencije
-rss_feed_url = "https://spin3.sos112.si/api/javno/ODRSS/true" # Vse intervencije vključno z nepreverjenimi
+rss_feed_url = "https://spin3.sos112.si/api/javno/ODRSS/false" # Samo preverjene intervencije
+# rss_feed_url = "https://spin3.sos112.si/api/javno/ODRSS/true" # Vse intervencije vključno z nepreverjenimi
+
 incident_details_url_base = "https://spin3.sos112.si/api/javno/lokacija/"
 vecji_obseg_url = "https://spin3.sos112.si/javno/assets/data/vecjiObseg.json"
 
@@ -156,6 +157,60 @@ def format_date_without_time(timestamp):
     except ValueError:
         # Return the original timestamp if parsing fails
         return timestamp
+
+
+# keywords to emojis
+emoji_mapping = {
+    "tehnična": ["🔧","🪜"],
+    "strupenih": ["☠️"],
+    "radioaktivnih": "☢️",
+    "plinov": ["💨","🧪"],
+    "plini": ["💨", "🧪"],
+    "razlitje": ["🫗"],
+    "razlitih": ["🫗"],
+    "snovi": ["🛢️"],
+    "snovmi": ["🛢️"],
+    "snov": ["🛢️"],
+    "nevarnih": ["⚠️"],
+    "nevarnimi": ["⚠️"],
+    "požar": ["🔥"],
+    "eksplozija": ["💥"],
+    "NUS": ["⏲️","💣"],
+    "prometna": ["🚦"],
+    "nesreča": ["🚑", "⚠️"],
+    "epidemija": ["🦠", "⚕️"],
+    "nestanovanjskih": ["🏬"],
+    "stanovanjskih": ["🏘️"],
+    "industrijskih": ["🏭"],
+    "kamnin": ["🪨"],
+    "naravi": ["🌳"],
+    "gorah": ["🏔️"],
+    "zabojnikih": ["🗑️"],
+    "gobarjenje": ["🍄"],
+
+}
+
+def get_emojis_for_keywords(*args):
+    """
+    Function to get the emojis based on keywords present in the given text fields.
+
+    Parameters:
+        *args: Multiple text fields (dogodekNaziv, besedilo, intervencijaVrstaNaziv).
+
+    Returns:
+        A string of unique emojis based on keyword matches across all text fields.
+    """
+    matched_emojis = set()  # Use a set to avoid duplicates
+
+    # Iterate over all given text fields
+    for text in args:
+        # Check each keyword in the text and add corresponding emojis to the set
+        for keyword, emojis in emoji_mapping.items():
+            if keyword.lower() in text.lower():
+                matched_emojis.update(emojis)
+
+    # Combine matched emojis into a single string
+    return ''.join(matched_emojis) if matched_emojis else "."  # Use dot . if no keyword is matched
 
 # Headers for requests
 headers = {
@@ -600,18 +655,32 @@ async def post_incident_to_topic(bot, incident, topic_id):
         return
 
     details = detailed_data['value']
+    # Log entire details to check the structure and data types
+    # logger.debug(f"Incident ID: {incident['id']}, Full Details: {details}")
+    
     lat = details.get('wgsLat', None)
     lon = details.get('wgsLon', None)
     dogodekNaziv = details.get('dogodekNaziv', '')
+    besedilo = details.get('besedilo', '')
+    intervencijaVrstaNaziv = details.get('intervencijaVrstaNaziv', '')
     
-    # Extract the ikona value and determine the emoji
-    ikona = details.get('ikona', 0)
-    if ikona == 0:
-        emoji = '🟨 '  # Grey check emoji for ikona value 0
-    else:
-        emoji = '🟩 '  # Green check emoji for non-zero ikona value
+    # # Extract the ikona value and log it to check if it matches expected values
+    # ikona = details.get('ikona', 0)
+    # logger.debug(f"Incident ID: {incident['id']}, Ikona Value: {ikona}, Type: {type(ikona)}")
+    
+    # # Compare using integer value of ikona
+    # ikona = int(ikona)
+    # if ikona == 0:
+    #     emoji = '🟨 '  # Grey check emoji for ikona value 0
+    # else:
+    #     emoji = '🟩 '  # Green check emoji for non-zero ikona value
+    
+    # Log which branch is being executed for clarity
+    # logger.info(f"Incident ID {incident['id']} uses emoji: {emoji}")
+    
+    # Extract the emoji based on keywords in the three fields
+    emoji = get_emojis_for_keywords(dogodekNaziv, besedilo, intervencijaVrstaNaziv)
 
-    
     # Get and format the timestamps
     nastanekCas = details.get('nastanekCas', 'N/A')
     formatted_nastanekCas = format_timestamp(nastanekCas) if nastanekCas != 'N/A' else 'N/A'
@@ -625,13 +694,14 @@ async def post_incident_to_topic(bot, incident, topic_id):
         formatted_pub_date = formatted_pub_date.replace(eng_day, slovenian_day)
         
     message = (
-        f"{emoji} <b>{details.get('intervencijaVrstaNaziv', 'N/A')}</b>\n"
+        f"<b>{details.get('intervencijaVrstaNaziv', 'N/A')}</b>\n\n"
         f"<b>{details.get('obcinaNaziv', 'N/A')}</b>\n"
         f"<i>Čas dogodka: {formatted_nastanekCas}</i> \n\n"
         f"{details.get('besedilo', 'N/A')}\n"
         f"<i>Lat:</i> {lat}\n"
         f"<i>Lon:</i> {lon}\n"
         f"<b>{details.get('dogodekNaziv', 'N/A')}</b>\n"
+        f"{emoji}\n"
         # f"<i>Čas objave:</i> {incident['pub_date']}\n"
         f"<i>Čas objave:</i> {formatted_pub_date}\n"
         f"ID: <a href='https://spin3.sos112.si/javno/zemljevid/{incident['id']}'>{incident['id']}</a>"
@@ -652,7 +722,7 @@ async def post_incident_to_topic(bot, incident, topic_id):
         else:
             await retry_send_message(bot, TELEGRAM_GROUP_ID, message, message_thread_id=topic_id)
 
-# Function to fetch and post new incidents automatically every 2 minutes
+# Function to fetch and post new incidents automatically every 3 minutes
 async def auto_fetch_and_post(context: CallbackContext, initial_run=True):
     global fetched_incidents
     

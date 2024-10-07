@@ -1,5 +1,7 @@
 # SPIN112 Incident Reporting Telegram Bot
 
+__[Sample:](https://t.me/nasoncnistranialp)__
+
 ## Introduction
 
 This **Telegram bot** is designed to automatically fetch and post incidents from the [SPIN3](https://spin3.sos112.si) RSS system to a designated Telegram supergroup and its topics. The incidents include various emergency situations such as traffic accidents, technical assistance, fire, explosions, and more, when they are reported 🟨 or when checked 🟩.
