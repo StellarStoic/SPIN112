@@ -4,7 +4,7 @@ from dotenv import load_dotenv  # Import the dotenv library
 import requests
 import xml.etree.ElementTree as ET
 import asyncio  # asynchronous sleep and operations
-from telegram import Bot, InputFile, Update
+from telegram import Bot, BotCommand, InputFile, Update
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, CallbackContext
 from telegram.error import TimedOut, NetworkError, RetryAfter, BadRequest, TelegramError, Forbidden
 import logging
@@ -1037,9 +1037,23 @@ async def auto_fetch_and_post_nepreverjeni(context: CallbackContext, initial_run
 async def error_handler(update: Update, context: CallbackContext):
     logger.error(f"An error occurred: {context.error}")
     
+async def register_bot_commands(application):
+    """Expose the subscription commands in Telegram's command menu."""
+    try:
+        await application.bot.set_my_commands([
+            BotCommand("track", "Dodaj lokacijo (kraj, občina ali koordinate)"),
+            BotCommand("list", "Prikaži sledene lokacije na zemljevidu"),
+            BotCommand("remove", "Odstrani sledeno lokacijo"),
+            BotCommand("stop", "Izbriši vse lokacije in prenehaj s sporočili"),
+            BotCommand("help", "Podrobna navodila"),
+        ])
+    except Exception as exc:  # network hiccup must not stop the bot
+        logger.warning(f"Could not register bot commands: {exc}")
+
+
 # Main function to start the bot
 def main():
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(register_bot_commands).build()
     job_queue = application.job_queue
 
     # Private-chat radius subscriptions (/track, /list, /remove, /stop)
