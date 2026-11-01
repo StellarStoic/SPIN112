@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 import asyncio  # asynchronous sleep and operations
 from telegram import Bot, InputFile, Update
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, CallbackContext
-from telegram.error import TimedOut, NetworkError, RetryAfter, BadRequest
+from telegram.error import TimedOut, NetworkError, RetryAfter, BadRequest, TelegramError
 import logging
 import time
 from datetime import datetime
@@ -21,11 +21,15 @@ from io import BytesIO
 load_dotenv()
 
 # Configure logging
+_file_handler = logging.FileHandler("SPIN112_bot_errors.log", encoding="utf-8")
+_file_handler.setLevel(logging.WARNING)  # file keeps only real problems
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.CRITICAL,
-    handlers=[logging.FileHandler("SPIN112_bot_errors.log"), logging.StreamHandler()]
+    level=logging.INFO,
+    handlers=[_file_handler, logging.StreamHandler()]
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Retrieve variables from .env file
@@ -544,18 +548,24 @@ def match_keywords_in_dogodek(dogodekNaziv):
 
 # Function to handle retries for sending photos
 async def retry_send_photo(bot, chat_id, photo, caption, message_thread_id=None, retries=5):
+    """Send a photo with an HTML caption. Returns True when Telegram accepted it."""
     for attempt in range(retries):
         try:
             with open(photo, 'rb') as img_file:
                 await bot.send_photo(chat_id=chat_id, photo=InputFile(img_file), caption=caption, parse_mode='HTML', message_thread_id=message_thread_id)
-            return
+            return True
         except BadRequest as e:
             logger.error(f"Failed to send photo: {e}")
             if 'message thread not found' in str(e).lower():
                 logger.error(f"Invalid message thread ID: {message_thread_id}. Skipping this post.")
                 break
+            if 'caption is too long' in str(e).lower() or 'wrong file identifier' in str(e).lower():
+                break
             await asyncio.sleep(5)
-
+        except TelegramError as e:
+            logger.error(f"Photo send attempt {attempt + 1}/{retries} failed: {e}")
+            await asyncio.sleep(5)
+    return False
 
 
 # Create a static map image
@@ -651,78 +661,78 @@ def get_incident_details(link_suffix):
         return None
 
 # Function to post incident data to the Telegram group topic
+TELEGRAM_CAPTION_LIMIT = 1000
+
+
+def build_incident_message(details, incident, emoji, nastanek, pub_date, lat, lon, besedilo_limit=None):
+    """Compose the incident card. besedilo_limit trims the free-text field so a caption fits."""
+    besedilo = details.get('besedilo', 'N/A')
+    if besedilo_limit is not None and len(besedilo) > besedilo_limit:
+        besedilo = besedilo[:max(0, besedilo_limit - 1)].rstrip() + u'\u2026'
+    return (
+        f"<b>{details.get('intervencijaVrstaNaziv', 'N/A')}</b>\n\n"
+        f"<b>{details.get('obcinaNaziv', 'N/A')}</b>\n"
+        f"<i>\u010cas dogodka: {nastanek}</i> \n\n"
+        f"{besedilo}\n"
+        f"<i>Lat:</i> {lat}\n"
+        f"<i>Lon:</i> {lon}\n"
+        f"<b>{details.get('dogodekNaziv', 'N/A')}</b>\n"
+        f"{emoji}\n"
+        f"<i>\u010cas objave:</i> {pub_date}\n"
+        f"ID: <a href='https://spin3.sos112.si/javno/zemljevid/{incident['id']}'>{incident['id']}</a>"
+    )
+
+
 async def post_incident_to_topic(bot, incident, topic_id):
     detailed_data = get_incident_details(incident['link_suffix'])
     if not detailed_data or 'value' not in detailed_data:
         return
 
     details = detailed_data['value']
-    # Log entire details to check the structure and data types
-    # logger.debug(f"Incident ID: {incident['id']}, Full Details: {details}")
-    
-    lat = details.get('wgsLat', None)
-    lon = details.get('wgsLon', None)
+
+    # The SOS112 API now exposes approximate coordinates (wgsLatApprox/wgsLonApprox);
+    # use the exact fields when present and fall back to the approximate ones.
+    lat = details.get('wgsLat') or details.get('wgsLatApprox')
+    lon = details.get('wgsLon') or details.get('wgsLonApprox')
     dogodekNaziv = details.get('dogodekNaziv', '')
     besedilo = details.get('besedilo', '')
     intervencijaVrstaNaziv = details.get('intervencijaVrstaNaziv', '')
-    
-    # # Extract the ikona value and log it to check if it matches expected values
-    # ikona = details.get('ikona', 0)
-    # logger.debug(f"Incident ID: {incident['id']}, Ikona Value: {ikona}, Type: {type(ikona)}")
-    
-    # # Compare using integer value of ikona
-    # ikona = int(ikona)
-    # if ikona == 0:
-    #     emoji = '🟨 '  # Grey check emoji for ikona value 0
-    # else:
-    #     emoji = '🟩 '  # Green check emoji for non-zero ikona value
-    
-    # Log which branch is being executed for clarity
-    # logger.info(f"Incident ID {incident['id']} uses emoji: {emoji}")
-    
-    # Extract the emoji based on keywords in the three fields
+
     emoji = get_emojis_for_keywords(dogodekNaziv, besedilo, intervencijaVrstaNaziv)
 
-    # Get and format the timestamps
     nastanekCas = details.get('nastanekCas', 'N/A')
     formatted_nastanekCas = format_timestamp(nastanekCas) if nastanekCas != 'N/A' else 'N/A'
-    
+
     pub_date = incident['pub_date']
     formatted_pub_date = format_timestamp(pub_date) if pub_date != 'N/A' else 'N/A'
-    formatted_pub_date = formatted_pub_date.replace('GMT', 'UTC')  # Replace GMT with UTC
+    formatted_pub_date = formatted_pub_date.replace('GMT', 'UTC')
 
-    # Replace English day abbreviations with custom ones for Slovenian
     for eng_day, slovenian_day in custom_day_names.items():
         formatted_pub_date = formatted_pub_date.replace(eng_day, slovenian_day)
-        
-    message = (
-        f"<b>{details.get('intervencijaVrstaNaziv', 'N/A')}</b>\n\n"
-        f"<b>{details.get('obcinaNaziv', 'N/A')}</b>\n"
-        f"<i>Čas dogodka: {formatted_nastanekCas}</i> \n\n"
-        f"{details.get('besedilo', 'N/A')}\n"
-        f"<i>Lat:</i> {lat}\n"
-        f"<i>Lon:</i> {lon}\n"
-        f"<b>{details.get('dogodekNaziv', 'N/A')}</b>\n"
-        f"{emoji}\n"
-        # f"<i>Čas objave:</i> {incident['pub_date']}\n"
-        f"<i>Čas objave:</i> {formatted_pub_date}\n"
-        f"ID: <a href='https://spin3.sos112.si/javno/zemljevid/{incident['id']}'>{incident['id']}</a>"
-    )
 
-    if topic_id is None:
-        # Send to the main thread of the supergroup (without message_thread_id)
-        if lat and lon:
+    message = build_incident_message(details, incident, emoji, formatted_nastanekCas, formatted_pub_date, lat, lon)
+
+    if lat and lon:
+        caption = message
+        if len(caption) > TELEGRAM_CAPTION_LIMIT:
+            excess = len(caption) - TELEGRAM_CAPTION_LIMIT
+            caption = build_incident_message(
+                details, incident, emoji, formatted_nastanekCas, formatted_pub_date, lat, lon,
+                besedilo_limit=max(0, len(besedilo) - excess - 5))
+            logger.info(f"Incident {incident['id']}: caption shortened to {len(caption)} chars for the map.")
+        try:
             create_static_map_image(lat, lon)
-            await retry_send_photo(bot, TELEGRAM_GROUP_ID, 'incident_map.png', message)
-        else:
-            await retry_send_message(bot, TELEGRAM_GROUP_ID, message)
-    else:
-        # Send to the specified topic (sub-thread) using message_thread_id
-        if lat and lon:
-            create_static_map_image(lat, lon)
-            await retry_send_photo(bot, TELEGRAM_GROUP_ID, 'incident_map.png', message, message_thread_id=topic_id)
-        else:
-            await retry_send_message(bot, TELEGRAM_GROUP_ID, message, message_thread_id=topic_id)
+        except Exception as e:
+            logger.error(f"Map generation failed for incident {incident['id']}: {type(e).__name__}: {e}")
+            caption = None
+        if caption is not None:
+            sent = await retry_send_photo(bot, TELEGRAM_GROUP_ID, 'incident_map.png', caption, message_thread_id=topic_id)
+            if sent:
+                logger.info(f"Posted incident {incident['id']} with map image (thread {topic_id}).")
+                return
+            logger.error(f"Photo post failed for incident {incident['id']}; falling back to text.")
+    await retry_send_message(bot, TELEGRAM_GROUP_ID, message, message_thread_id=topic_id)
+
 
 # Function to fetch and post new incidents automatically every 3 minutes
 async def auto_fetch_and_post(context: CallbackContext, initial_run=False):
@@ -766,8 +776,8 @@ async def auto_fetch_and_post(context: CallbackContext, initial_run=False):
                 intervention_type = details.get('intervencijaVrstaNaziv', '')
                 dogodekNaziv = details.get('dogodekNaziv', '')
 
-                lat = details.get('wgsLat', None)
-                lon = details.get('wgsLon', None)
+                lat = details.get('wgsLat') or details.get('wgsLatApprox')
+                lon = details.get('wgsLon') or details.get('wgsLonApprox')
                 
                 # Determine the region from the coordinates
                 if lat and lon:
