@@ -83,12 +83,24 @@ MAP_STYLE_URLS = {
     "default": "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
     "light": "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
 }
+# One colour per position in the list, used both for the area on the map and for
+# the marker in /list. Only colours that exist as a coloured circle, square *and*
+# heart are used, so the marker can keep its shape and still match the map.
 MAP_COLORS = (
-    "#e01b24", "#1c71d8", "#2ec27e", "#e66100",
-    "#813d9c", "#0f8b8d", "#c01c8a", "#8a6d00",
+    "#e01b24", "#e66100", "#b89400", "#2ec27e",
+    "#1c71d8", "#813d9c", "#8a5a2b", "#241f31",
 )
-# same order as MAP_COLORS, used in the /list caption so the legend matches the map
-MAP_EMOJI = ("🔴", "🔵", "🟢", "🟠", "🟣", "🟦", "🟪", "🟤")
+# Same order as MAP_COLORS: [red, orange, yellow, green, blue, purple, brown, black].
+SHAPE_EMOJI = {
+    "heart": ("❤️", "🧡", "💛", "💚", "💙", "💜", "🤎", "🖤"),
+    "square": ("🟥", "🟧", "🟨", "🟩", "🟦", "🟪", "🟫", "⬛"),
+    "circle": ("🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "🟤", "⚫"),
+}
+# The circle row of SHAPE_EMOJI: the colour of subscription N, whichever shape.
+MAP_EMOJI = SHAPE_EMOJI["circle"]
+# Shape per watch kind: a heart for a municipality border, a square for a geohash
+# cell, a circle for a radius. (No triangle glyph renders on every client.)
+KIND_SHAPE = {"obcina": "heart", "geohash": "square", "circle": "circle"}
 
 MAX_SUBSCRIPTIONS = 15
 
@@ -368,18 +380,21 @@ def describe_subscription(row):
     return f"{(row.get('radius_km') or 0):g} km"
 
 
-# One shape per watch kind, so the list reads at a glance and matches what the
-# map draws: a heart for a municipality border, a rectangle for a geohash cell,
-# a circle for a radius. (There is no triangle emoji that renders on every
-# client, so municipalities use a heart instead.)
-KIND_EMOJI = {"obcina": "❤️", "geohash": "🔲", "circle": "🔵"}
-
-
-def kind_emoji(row):
-    """Shape marker for a subscription row: heart, rectangle or circle."""
+def kind_shape(row):
+    """Shape family for a row: 'heart', 'square' or 'circle'."""
     if (row.get("geohash") or "").strip():
-        return KIND_EMOJI["geohash"]
-    return KIND_EMOJI.get(row.get("kind") or "circle", KIND_EMOJI["circle"])
+        return "square"
+    return KIND_SHAPE.get(row.get("kind") or "circle", "circle")
+
+
+def kind_emoji(row, index=0):
+    """The row's marker: the colour of its area on the map, in its kind's shape.
+
+    ``index`` is the row's position in the list — the same index the map uses to
+    pick the colour — so /list row N and area N on the map are the same colour.
+    """
+    shapes = SHAPE_EMOJI[kind_shape(row)]
+    return shapes[index % len(shapes)]
 
 
 def encode_topics(keys):
@@ -1722,12 +1737,12 @@ def _list_caption(rows):
         tags = describe_topics(row)
         kinds = "" if tags == ALL_TOPICS_TEXT else f" · 🏷 {html.escape(tags)}"
         lines.append(
-            f"{kind_emoji(row)} <code>{row['id']}</code> · <b>{html.escape(row['label'])}</b>"
+            f"{kind_emoji(row, index)} <code>{row['id']}</code> · <b>{html.escape(row['label'])}</b>"
             f" · {scope}{coords}{kinds}"
         )
     lines.append("")
-    lines.append("Oblika pove vrsto območja: ❤️ meja občine, 🔲 geohash celica, "
-                 "🔵 območje s polmerom; številke se ujemajo z oznakami na zemljevidu. "
+    lines.append("Barva se ujema z območjem na zemljevidu, oblika pa pove vrsto: "
+                 "❤️ občina (meja), 🟪 geohash celica, 🟡 območje s polmerom. "
                  "Odstranitev: /remove &lt;številka&gt; ali gumb spodaj. "
                  "Vrste dogodkov: /topics.")
     return "\n".join(lines)
@@ -1786,15 +1801,17 @@ async def _ask_delete(update, context, sub_id, from_callback):
         InlineKeyboardButton("✅ Da, odstrani", callback_data=f"delok:{sub_id}"),
         InlineKeyboardButton("↩️ Ne", callback_data="delno"),
     ]])
-    question = _remove_question(row)
+    rows = await asyncio.to_thread(list_subscriptions, chat_id)
+    index = next((i for i, r in enumerate(rows) if r["id"] == sub_id), 0)
+    question = _remove_question(row, index)
     await _answer(update, question, keyboard, from_callback=from_callback)
 
 
-def _remove_question(row):
-    """Confirm-removal text: label, shape marker and the area it covers."""
+def _remove_question(row, index=0):
+    """Confirm-removal text: label, the row's own marker and the area it covers."""
     return (
         f"Ali res želite odstraniti <b>{html.escape(row['label'])}</b> "
-        f"({kind_emoji(row)} {describe_subscription(row)})?\n"
+        f"({kind_emoji(row, index)} {describe_subscription(row)})?\n"
         "Obvestil za to območje ne boste več prejemali."
     )
 
