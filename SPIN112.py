@@ -1161,7 +1161,7 @@ async def log_topic_capabilities(application):
     if application.bot.username and application.bot.username.lower() != expected.lower():
         logger.warning(
             f"Posting with @{application.bot.username}, but the production bot is "
-            f"@{expected}. eusafetybot is retired; check TELEGRAM_BOT_TOKEN."
+            f"@{expected}. Check TELEGRAM_BOT_TOKEN."
         )
     else:
         logger.info(f"Posting with the expected bot @{application.bot.username}")
