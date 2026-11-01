@@ -767,8 +767,13 @@ async def post_incident_to_topic(bot, incident, topic_id, is_verified=True):
             logger.error(f"Photo post failed for incident {incident['id']}; falling back to text.")
     return await retry_send_message(bot, TELEGRAM_GROUP_ID, message, message_thread_id=topic_id)
 
-async def notify_radius_subscribers(bot, incident, details):
+async def notify_radius_subscribers(bot, incident, details, incident_topics=None):
     """Send a new incident to every private chat whose tracked radius covers it.
+
+    ``incident_topics`` lists the kinds this incident belongs to - the same names
+    the group topics use (intervention type plus keyword topics). A chat that
+    followed only some kinds is skipped when none of them apply; when the set is
+    empty the incident counts as unclassified and reaches every matching area.
 
     Failures for one subscriber never abort the others, and each (chat, incident)
     pair is recorded so a restart cannot deliver the same incident twice.
@@ -777,8 +782,13 @@ async def notify_radius_subscribers(bot, incident, details):
     lon = details.get('wgsLon') or details.get('wgsLonApprox')
     if not (lat and lon):
         return
+    if incident_topics is None:
+        incident_topics = set(match_keywords_in_dogodek(details.get('dogodekNaziv', '')))
+        intervention = (details.get('intervencijaVrstaNaziv') or '').strip()
+        if intervention:
+            incident_topics.add(intervention)
     try:
-        matches = subscriptions.match_subscribers(lat, lon)
+        matches = subscriptions.match_subscribers(lat, lon, incident_topics)
     except Exception as e:
         logger.error(f"Subscription lookup failed for incident {incident['id']}: {type(e).__name__}: {e}")
         return
@@ -897,8 +907,13 @@ async def auto_fetch_and_post(context: CallbackContext, initial_run=False):
                         logger.info(f"Posted incident ID {incident_id} to keyword topic: {matched_topic}")  # Log successful post
                         await asyncio.sleep(1)
 
-                # Send the incident to every private chat that tracks this area
-                await notify_radius_subscribers(context.bot, incident, details)
+                # Send the incident to every private chat that tracks this area,
+                # limited to the incident kinds each chat chose to follow
+                incident_topics = {intervention_type} | set(matched_topics)
+                incident_topics.discard('')
+                incident_topics.discard('N/A')
+                await notify_radius_subscribers(context.bot, incident, details,
+                                                incident_topics)
 
             # # If posted anywhere, delete from the All topic to avoid duplication
             # if posted_anywhere:
@@ -1045,6 +1060,7 @@ async def register_bot_commands(application):
             BotCommand("list", "Prikaži sledene lokacije na zemljevidu"),
             BotCommand("remove", "Odstrani sledeno lokacijo"),
             BotCommand("stop", "Izbriši vse lokacije in prenehaj s sporočili"),
+            BotCommand("topics", "Izberi vrste dogodkov za lokacijo"),
             BotCommand("help", "Podrobna navodila"),
         ])
     except Exception as exc:  # network hiccup must not stop the bot

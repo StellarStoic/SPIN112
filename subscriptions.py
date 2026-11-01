@@ -55,7 +55,7 @@ DELIVERY_RETENTION_DAYS = 60
 _last_nominatim_call = 0.0
 
 # conversation states
-PLACE, PICK, RADIUS, RADIUS_CUSTOM, NAME = range(5)
+PLACE, PICK, RADIUS, RADIUS_CUSTOM, NAME, TOPICS, TOPIC_PICK = range(7)
 
 RADIUS_PRESETS = (5, 10, 25, 50)
 
@@ -79,6 +79,31 @@ MAP_COLORS = (
 MAP_EMOJI = ("🔴", "🔵", "🟢", "🟠", "🟣", "🟦", "🟪", "🟤")
 
 MAX_SUBSCRIPTIONS = 15
+
+# Incident kinds a subscriber can pick from. The keys are exactly the names
+# SPIN112.py uses for its group topics (intervention types and keyword topics),
+# so the incident side can pass its own strings straight in.
+TOPIC_CHOICES = (
+    ("Epidemije", "🦠 Epidemije"),
+    ("Jedrska ali radiološka nevarnost", "☢️ Jedrska/radiološka"),
+    ("Požar, eksplozija", "🔥 Požar, eksplozija"),
+    ("Prometna nesreča", "🚗 Prometna nesreča"),
+    ("Onesnaženje, nesreče z nevarnimi snovmi", "☣️ Onesnaženje/hazmat"),
+    ("Nevarne snovi", "🧪 Nevarne snovi (besede)"),
+    ("Tehnična in druga pomoč", "🔧 Tehnična pomoč"),
+    ("Tehnična in druga pomoč - jama", "🕳 Tehnična pomoč – jama"),
+    ("Tehnična in druga pomoč - plaz", "⛰ Tehnična pomoč – plaz"),
+    ("Najdbe NUS", "💣 Najdbe NUS"),
+    ("Motnje, omejitve in prekinitve oskrbe", "💡 Motnje oskrbe"),
+    ("Prevoz pitne vode", "🚚 Prevoz pitne vode"),
+    ("Lažne in nepotrebne intervencije", "🚨 Lažne intervencije"),
+    ("Gore", "🏔 Gore"),
+    ("Športne aktivnosti", "🎿 Športne aktivnosti"),
+)
+TOPIC_KEYS = tuple(key for key, _label in TOPIC_CHOICES)
+TOPIC_LABELS = dict(TOPIC_CHOICES)
+TOPIC_SEP = "|"
+ALL_TOPICS_TEXT = "vse vrste"
 
 
 # --------------------------------------------------------------------------- #
@@ -112,7 +137,8 @@ def init(db_path=None, ob_features=None):
                 created_at TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 kind TEXT NOT NULL DEFAULT 'circle',
-                ob_name TEXT
+                ob_name TEXT,
+                topics TEXT
             );
             CREATE UNIQUE INDEX IF NOT EXISTS ux_subscription
                 ON subscriptions(chat_id, label);
@@ -137,6 +163,9 @@ def init(db_path=None, ob_features=None):
             )
         if "ob_name" not in columns:
             conn.execute("ALTER TABLE subscriptions ADD COLUMN ob_name TEXT")
+        # databases created before kind filters lack this one
+        if "topics" not in columns:
+            conn.execute("ALTER TABLE subscriptions ADD COLUMN topics TEXT")
         conn.commit()
     logger.info("Radius subscriptions ready (%s).", DB_PATH)
 
@@ -235,11 +264,14 @@ def haversine_km(lat1, lon1, lat2, lon2):
     return 2 * r * math.asin(math.sqrt(a))
 
 
-def add_subscription(chat_id, label, lat, lon, radius_km, kind="circle", ob_name=None):
+def add_subscription(chat_id, label, lat, lon, radius_km, kind="circle", ob_name=None,
+                     topics=None):
     """Insert or update one location for one chat. Returns the row id.
 
     ``kind`` is ``'circle'`` (a point plus radius) or ``'obcina'`` (a whole
-    municipality, matched by its polygon; radius is stored as 0).
+    municipality, matched by its polygon; radius is stored as 0). ``topics`` is
+    the optional list of incident kinds this location should report; an empty
+    list means every kind.
     """
     kind = "obcina" if kind == "obcina" else "circle"
     if kind == "obcina":
@@ -251,8 +283,9 @@ def add_subscription(chat_id, label, lat, lon, radius_km, kind="circle", ob_name
         cur = conn.execute(
             """
             INSERT INTO subscriptions
-                (chat_id, label, lat, lon, radius_km, created_at, enabled, kind, ob_name)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                (chat_id, label, lat, lon, radius_km, created_at, enabled, kind, ob_name,
+                 topics)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
             ON CONFLICT(chat_id, label) DO UPDATE SET
                 lat = excluded.lat,
                 lon = excluded.lon,
@@ -260,9 +293,11 @@ def add_subscription(chat_id, label, lat, lon, radius_km, kind="circle", ob_name
                 created_at = excluded.created_at,
                 enabled = 1,
                 kind = excluded.kind,
-                ob_name = excluded.ob_name
+                ob_name = excluded.ob_name,
+                topics = excluded.topics
             """,
-            (int(chat_id), label, float(lat), float(lon), radius_km, now, kind, ob_name),
+            (int(chat_id), label, float(lat), float(lon), radius_km, now, kind, ob_name,
+             encode_topics(topics)),
         )
         conn.commit()
         row_id = cur.lastrowid
@@ -279,7 +314,7 @@ def add_subscription(chat_id, label, lat, lon, radius_km, kind="circle", ob_name
     return row_id
 
 
-_COLUMNS = "id, chat_id, label, lat, lon, radius_km, kind, ob_name"
+_COLUMNS = "id, chat_id, label, lat, lon, radius_km, kind, ob_name, topics"
 
 
 def list_subscriptions(chat_id):
@@ -309,6 +344,46 @@ def describe_subscription(row):
     return f"{(row.get('radius_km') or 0):g} km"
 
 
+def encode_topics(keys):
+    """Store a kind selection as a '|' separated string; None means every kind."""
+    wanted = []
+    for key in keys or []:
+        if key in TOPIC_LABELS and key not in wanted:
+            wanted.append(key)
+    if not wanted or len(wanted) == len(TOPIC_KEYS):
+        return None
+    return TOPIC_SEP.join(wanted)
+
+
+def decode_topics(value):
+    """Turn a stored value back into the list of chosen kind names."""
+    if not value:
+        return []
+    return [part for part in str(value).split(TOPIC_SEP) if part in TOPIC_LABELS]
+
+
+def describe_topics(row):
+    """Short human summary of a subscription's kind filter, e.g. 'vse vrste'."""
+    keys = decode_topics(row.get("topics")) if isinstance(row, dict) else []
+    if not keys:
+        return ALL_TOPICS_TEXT
+    if len(keys) <= 2:
+        return ", ".join(TOPIC_LABELS[key].split(" ", 1)[-1] for key in keys)
+    return f"{len(keys)} vrst"
+
+
+def set_topics(chat_id, sub_id, topics):
+    """Replace the kind filter of one saved subscription ([] = every kind)."""
+    value = encode_topics(topics)
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE subscriptions SET topics = ? WHERE id = ? AND chat_id = ?",
+            (value, int(sub_id), int(chat_id)),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def remove_subscription(chat_id, sub_id):
     with _connect() as conn:
         cur = conn.execute(
@@ -333,20 +408,30 @@ def disable_chat(chat_id):
         conn.commit()
 
 
-def match_subscribers(lat, lon):
+def match_subscribers(lat, lon, topics=None):
     """Return {chat_id: [(label, distance_km, radius_km), ...]} for one incident.
 
     Circle subscriptions match by distance; občina subscriptions match by their
     polygon, so an incident anywhere inside the municipality counts.
+
+    ``topics`` holds the incident's kinds (the same names the group topics use).
+    A subscription with its own kind filter only matches when the two overlap;
+    with no/empty ``topics`` the incident counts as unclassified and reaches
+    every matching location, so a missing category never silences alerts.
     """
     lat, lon = float(lat), float(lon)
+    wanted = {key for key in (topics or []) if key in TOPIC_LABELS} or None
     matches = {}
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT chat_id, label, lat, lon, radius_km, kind, ob_name "
+            "SELECT chat_id, label, lat, lon, radius_km, kind, ob_name, topics "
             "FROM subscriptions WHERE enabled = 1"
         ).fetchall()
     for row in rows:
+        if wanted is not None:
+            allowed = set(decode_topics(row["topics"]))
+            if allowed and not (allowed & wanted):
+                continue
         distance = haversine_km(lat, lon, row["lat"], row["lon"])
         if (row["kind"] or "circle") == "obcina":
             if point_in_obcina(lat, lon, row["ob_name"]):
@@ -609,11 +694,26 @@ HELP_TEXT = (
     "Vsaki lokaciji lahko daste svoje ime (»Doma«, »Služba«, »Vikend«). Ko "
     "vnesete koordinate, bot vedno vpraša, kako naj jo imenuje – ime se pojavi "
     "v /list in v obvestilih, da takoj veste, zakaj ste sporočilo dobili.\n\n"
+    "<b>Vrste dogodkov (teme)</b>\n"
+    "Vsaki lokaciji lahko določite, katere vrste dogodkov vas zanimajo – npr. samo "
+    "<i>Epidemije</i>, <i>Jedrska ali radiološka nevarnost</i>, "
+    "<i>Športne aktivnosti</i> ali <i>Požar, eksplozija</i>. Bot vas vpraša takoj "
+    "po izbiri lokacije; izberete lahko več vrst, s klikom na vrsto jo "
+    "vklopite/izklopite. Če ne izberete nobene, prejmete <b>vse</b> dogodke v tem "
+    "območju – enako kot doslej.\n"
+    "<b>/topics</b> – spremenite vrste za že shranjeno lokacijo "
+    "(<code>/topics 3</code> ali izberite s seznama).\n"
+    "Na voljo: Epidemije · Jedrska ali radiološka nevarnost · Požar, eksplozija · "
+    "Prometna nesreča · Onesnaženje in nevarne snovi · Nevarne snovi (ključne "
+    "besede) · Tehnična in druga pomoč (tudi jama in plaz) · Najdbe NUS · Motnje "
+    "oskrbe · Prevoz pitne vode · Lažne intervencije · Gore · Športne "
+    "aktivnosti.\n\n"
     "<b>Primeri</b>\n"
     "<code>/track Ljubljana</code>\n"
     "<code>/track Videm pri Ptuju</code>\n"
     "<code>/track 46.2397 14.3567 10</code>\n"
-    "<code>/track 46.2397 14.3567</code> – polmer vpraša naslednji korak\n\n"
+    "<code>/track 46.2397 14.3567</code> – polmer vpraša naslednji korak\n"
+    "<code>/topics 2</code> – spremeni vrste dogodkov za 2. lokacijo\n\n"
     "Obseg: polmer od 1 do 100 km, največ 15 lokacij na klepet."
 )
 
@@ -710,7 +810,8 @@ def _in_slovenia(lat, lon):
 
 
 def _clear_pending(context):
-    for key in ("pending", "candidate", "candidates", "pending_query"):
+    for key in ("pending", "candidate", "candidates", "pending_query",
+                "topic_selection", "topic_edit", "topic_header"):
         context.user_data.pop(key, None)
 
 
@@ -819,17 +920,17 @@ async def got_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Ime je predolgo (največ {MAX_LABEL_LEN} znakov). Poskusite znova."
         )
         return NAME
-    return await _commit(update, context, raw, from_callback=False)
+    context.user_data.setdefault("pending", {})["label"] = raw
+    return await _ask_topics(update, context, from_callback=False)
 
 
 async def name_from_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    pending = context.user_data.get("pending") or {}
-    return await _commit(update, context, pending.get("label", ""), from_callback=True)
+    return await _ask_topics(update, context, from_callback=True)
 
 
-async def _commit(update, context, label, from_callback=False):
+async def _commit(update, context, label, from_callback=False, topics=None):
     """Persist the pending location under ``label`` and confirm."""
     pending = context.user_data.get("pending")
     chat_id = update.effective_chat.id
@@ -852,7 +953,7 @@ async def _commit(update, context, label, from_callback=False):
     radius_km = pending.get("radius_km") or 0.0
     await asyncio.to_thread(
         add_subscription, chat_id, label, pending["lat"], pending["lon"],
-        radius_km, kind, pending.get("ob_name"),
+        radius_km, kind, pending.get("ob_name"), topics,
     )
     if kind == "obcina":
         scope = f"cela občina <b>{html.escape(pending.get('ob_name') or '')}</b>"
@@ -863,8 +964,9 @@ async def _commit(update, context, label, from_callback=False):
         update,
         f"✅ {verb}: <b>{html.escape(label)}</b> – {scope}.\n"
         f"📍 <code>{pending['lat']:.4f}, {pending['lon']:.4f}</code>\n"
+        f"🏷 Vrste: <b>{html.escape(describe_topics({'topics': encode_topics(topics)}))}</b>\n"
         "Nove intervencije v tem območju vam pošljem tukaj. Vse lokacije in "
-        "zemljevid: /list.",
+        "zemljevid: /list. Vrste kadarkoli spremenite s /topics.",
         from_callback=from_callback,
     )
     _clear_pending(context)
@@ -953,7 +1055,7 @@ async def picked_radius(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "ob_name": ob_name,
             "radius_km": 0.0,
         }
-        return await _commit(update, context, f"Občina {ob_name}", from_callback=True)
+        return await _ask_topics(update, context, from_callback=True)
     try:
         radius_km = float(value)
     except ValueError:
@@ -998,7 +1100,194 @@ async def _save_from_candidate(update, context, radius_km, from_callback):
         "ob_name": candidate.get("ob_name"),
         "radius_km": radius_km,
     }
-    return await _commit(update, context, candidate["label"], from_callback=from_callback)
+    return await _ask_topics(update, context, from_callback=from_callback)
+
+
+def _pending_header(pending):
+    """One-line summary of the location currently being configured."""
+    label = html.escape(pending.get("label") or "nova lokacija")
+    if (pending.get("kind") or "circle") == "obcina":
+        return f"📍 <b>{label}</b> · cela občina {html.escape(pending.get('ob_name') or '')}"
+    return f"📍 <b>{label}</b> · polmer {(pending.get('radius_km') or 0):g} km"
+
+
+def _topic_keyboard(selected):
+    selected = list(selected or [])
+    rows, row = [], []
+    for index, (key, label) in enumerate(TOPIC_CHOICES):
+        mark = "✅ " if key in selected else ""
+        row.append(InlineKeyboardButton(f"{mark}{label}", callback_data=f"top:{index}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("🔄 Vse vrste (brez filtra)", callback_data="top:all")])
+    rows.append([InlineKeyboardButton("💾 Shrani izbor", callback_data="top:save")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _topic_prompt(header, selected):
+    if selected:
+        names = ", ".join(TOPIC_LABELS[key].split(" ", 1)[-1] for key in selected)
+        state = f"Izbrali ste <b>{len(selected)}</b>: {html.escape(names)}"
+    else:
+        state = "Trenutno: <b>vse vrste dogodkov</b> – prejmete vse."
+    return (
+        f"{header}\n\n<b>Katere vrste dogodkov vas zanimajo?</b>\n"
+        "Klikajte po vrsti – izberete lahko več. Če ne izberete nobene, prejmete "
+        "<b>vse</b> dogodke v tem območju.\n\n"
+        f"{state}\n\n"
+        "Primeri: <i>Epidemije</i>, <i>Jedrska ali radiološka nevarnost</i>, "
+        "<i>Športne aktivnosti</i>."
+    )
+
+
+async def _ask_topics(update, context, from_callback=False):
+    """Ask which incident kinds this location should report; returns TOPICS."""
+    pending = context.user_data.get("pending") or {}
+    context.user_data["topic_header"] = _pending_header(pending)
+    context.user_data["topic_selection"] = list(pending.get("topics") or [])
+    selected = context.user_data["topic_selection"]
+    await _answer(
+        update,
+        _topic_prompt(context.user_data["topic_header"], selected),
+        _topic_keyboard(selected),
+        from_callback=from_callback,
+    )
+    return TOPICS
+
+
+async def picked_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle one incident kind, clear the filter, or save the selection."""
+    query = update.callback_query
+    await query.answer()
+    value = query.data.split(":", 1)[1]
+    if value == "save":
+        return await _save_topics(update, context)
+    selected = list(context.user_data.get("topic_selection") or [])
+    if value == "all":
+        selected = []
+    else:
+        try:
+            key = TOPIC_CHOICES[int(value)][0]
+        except (IndexError, ValueError):
+            return TOPICS
+        if key in selected:
+            selected.remove(key)
+        else:
+            selected.append(key)
+    context.user_data["topic_selection"] = selected
+    try:
+        await query.edit_message_text(
+            _topic_prompt(context.user_data.get("topic_header") or "", selected),
+            parse_mode="HTML",
+            reply_markup=_topic_keyboard(selected),
+        )
+    except TelegramError:
+        pass
+    return TOPICS
+
+
+async def _save_topics(update, context):
+    """Persist the selection: new location -> commit, existing one -> update."""
+    selected = list(context.user_data.get("topic_selection") or [])
+    sub_id = context.user_data.get("topic_edit")
+    if sub_id is not None:
+        chat_id = update.effective_chat.id
+        row = await asyncio.to_thread(get_subscription, chat_id, sub_id)
+        if not row:
+            await _answer(update, "Take lokacije ni več na seznamu.", from_callback=True)
+            _clear_pending(context)
+            return ConversationHandler.END
+        await asyncio.to_thread(set_topics, chat_id, sub_id, selected)
+        tags = describe_topics({"topics": encode_topics(selected)})
+        await _answer(
+            update,
+            f"✅ Vrste za <b>{html.escape(row['label'])}</b>: <b>{html.escape(tags)}</b>.\n"
+            "Obvestila za to območje bodo upoštevala nov izbor.",
+            from_callback=True,
+        )
+        _clear_pending(context)
+        return ConversationHandler.END
+    pending = context.user_data.get("pending") or {}
+    return await _commit(
+        update, context, pending.get("label", ""), from_callback=True, topics=selected
+    )
+
+
+async def _start_topic_edit(update, context, sub_id, from_callback=False):
+    """Open the kind picker for an already saved location."""
+    chat_id = update.effective_chat.id
+    row = await asyncio.to_thread(get_subscription, chat_id, sub_id)
+    if not row:
+        await _answer(
+            update, "Take lokacije ni na vašem seznamu. Glejte /list.",
+            from_callback=from_callback,
+        )
+        return TOPIC_PICK
+    context.user_data["topic_edit"] = sub_id
+    context.user_data["topic_selection"] = decode_topics(row.get("topics"))
+    context.user_data["topic_header"] = (
+        f"🏷 <b>{html.escape(row['label'])}</b> · {describe_subscription(row)}"
+    )
+    selected = context.user_data["topic_selection"]
+    await _answer(
+        update,
+        _topic_prompt(context.user_data["topic_header"], selected),
+        _topic_keyboard(selected),
+        from_callback=from_callback,
+    )
+    return TOPICS
+
+
+async def cmd_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Change which incident kinds a saved location reports."""
+    if not _private_only(update):
+        return await _refuse_group(update, context)
+    chat_id = update.effective_chat.id
+    if context.args and context.args[0].isdigit():
+        return await _start_topic_edit(update, context, int(context.args[0]))
+    rows = await asyncio.to_thread(list_subscriptions, chat_id)
+    if not rows:
+        await update.effective_message.reply_text(
+            "Nimate shranjenih lokacij. Dodajte jih s /track.", parse_mode="HTML"
+        )
+        return ConversationHandler.END
+    keyboard = [
+        [InlineKeyboardButton(
+            f"🏷 {row['label'][:30]} · {describe_topics(row)}"[:60],
+            callback_data=f"tsel:{row['id']}",
+        )]
+        for row in rows
+    ]
+    await update.effective_message.reply_text(
+        "<b>Kateri lokaciji želite spremeniti vrste dogodkov?</b>\n"
+        "Izberite lokacijo ali uporabite <code>/topics &lt;številka&gt;</code>.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return TOPIC_PICK
+
+
+async def picked_topic_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    try:
+        sub_id = int(query.data.split(":", 1)[1])
+    except ValueError:
+        return TOPIC_PICK
+    return await _start_topic_edit(update, context, sub_id, from_callback=True)
+
+
+async def got_topic_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw = (update.effective_message.text or "").strip()
+    if not raw.isdigit():
+        await update.effective_message.reply_text(
+            "Vpišite številko lokacije s seznama (/list) ali /cancel."
+        )
+        return TOPIC_PICK
+    return await _start_topic_edit(update, context, int(raw))
 
 
 def _list_caption(rows):
@@ -1007,13 +1296,16 @@ def _list_caption(rows):
         scope = describe_subscription(row)
         obcina = (row.get("kind") or "circle") == "obcina"
         coords = "" if obcina else f" · {row['lat']:.4f}, {row['lon']:.4f}"
+        tags = describe_topics(row)
+        kinds = "" if tags == ALL_TOPICS_TEXT else f" · 🏷 {html.escape(tags)}"
         lines.append(
             f"{_emoji(index)} <code>{row['id']}</code> · <b>{html.escape(row['label'])}</b>"
-            f" · {scope}{coords}"
+            f" · {scope}{coords}{kinds}"
         )
     lines.append("")
     lines.append("Barve na zemljevidu se ujemajo s krogci zgoraj. "
-                 "Odstranitev: /remove &lt;številka&gt; ali gumb spodaj.")
+                 "Odstranitev: /remove &lt;številka&gt; ali gumb spodaj. "
+                 "Vrste dogodkov: /topics.")
     return "\n".join(lines)
 
 
@@ -1158,6 +1450,8 @@ def build_handlers():
         entry_points=[
             CommandHandler("track", cmd_track, filters.ChatType.PRIVATE),
             CommandHandler("track", _refuse_group, filters.ChatType.GROUPS),
+            CommandHandler("topics", cmd_topics, filters.ChatType.PRIVATE),
+            CommandHandler("topics", _refuse_group, filters.ChatType.GROUPS),
         ],
         states={
             PLACE: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_place)],
@@ -1170,6 +1464,11 @@ def build_handlers():
             NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, got_name),
                 CallbackQueryHandler(name_from_button, pattern=r"^name:"),
+            ],
+            TOPICS: [CallbackQueryHandler(picked_topic, pattern=r"^top:")],
+            TOPIC_PICK: [
+                CallbackQueryHandler(picked_topic_subscription, pattern=r"^tsel:"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, got_topic_subscription),
             ],
         },
         fallbacks=[CommandHandler("cancel", cmd_cancel)],

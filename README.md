@@ -18,6 +18,36 @@ This **Telegram bot** is designed to automatically fetch and post incidents from
   - Polygon boundaries for larger incidents (e.g., "Večji obseg" events) to show the manicipality of the major event.
 - Posts only new incidents and keeps track of already posted incidents using JSON files.
 
+## Followed locations in private chat
+
+Besides posting to the group, the bot can send incidents to a private chat for the
+areas that chat follows. Every message in this section arrives as a DM, and the
+group / topic / keyword posting is unaffected.
+
+| Command | What it does |
+| --- | --- |
+| `/track` | Add a place: type a village/town or municipality name, or coordinates plus radius (`46.2397 14.3567 10`). The bot proposes a radius, asks for a name, then asks which incident kinds to follow. |
+| `/list` | Show all followed locations on a map with their radius circles. |
+| `/topics` | Change the incident kinds of an already saved location (`/topics 3` or pick it from the list). |
+| `/remove` | Delete one followed location (with confirmation). |
+| `/stop` | Delete every followed location and stop the DMs. |
+| `/help` | Full instructions. |
+
+**Incident kinds (topics).** After the location is chosen, the bot offers the kinds
+it can filter on — `Epidemije`, `Jedrska ali radiološka nevarnost`,
+`Športne aktivnosti`, `Požar, eksplozija`, `Prometna nesreča`, hazmat,
+`Najdbe NUS`, `Gore` and the remaining intervention types. Toggle any number of
+them and save; the selection is stored per location, so one location can follow
+only epidemics while another follows everything. Selecting **nothing** means
+"all incidents in the area", which is the previous behaviour. A kind comes from
+the incident's intervention type *or* its keyword match, exactly like the group
+topics — so choosing `Športne aktivnosti` or `Gore` also catches incidents whose
+title mentions sports or mountain activity. Incidents whose kind cannot be
+determined are not filtered out.
+
+Max 15 locations per chat. The database lives in `subscriptions.db`
+(override with the `SUBSCRIPTIONS_DB` environment variable).
+
 ## Installation
 
 ### 1. Clone the repository:
