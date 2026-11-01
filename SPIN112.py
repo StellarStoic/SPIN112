@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 import asyncio  # asynchronous sleep and operations
 from telegram import Bot, InputFile, Update
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, CallbackContext
-from telegram.error import TimedOut, NetworkError, RetryAfter, BadRequest, TelegramError
+from telegram.error import TimedOut, NetworkError, RetryAfter, BadRequest, TelegramError, Forbidden
 import logging
 import time
 from datetime import datetime
@@ -16,6 +16,7 @@ from shapely.geometry import shape, Point  # shapely for geojson region matching
 from shapely.geometry import Polygon as ShapelyPolygon, Point as ShapelyPoint  # Import Shapely's Polygon and Point
 from PIL import Image, ImageEnhance
 from io import BytesIO
+import subscriptions  # per-user radius subscriptions (private chat)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -243,6 +244,12 @@ with open(geojson_file, 'r') as geo_file:
 # Load OB geojson data
 with open(ob_geojson_file, 'r') as ob_file:
     ob_geojson_data = json.load(ob_file)
+
+# Per-user radius subscriptions: SQLite store + offline municipality index
+subscriptions.init(
+    db_path=os.getenv('SUBSCRIPTIONS_DB', 'subscriptions.db'),
+    ob_features=ob_geojson_data.get('features', []),
+)
 
 # Function to determine the region based on coordinates
 def get_region_from_coordinates(lat, lon):
@@ -683,13 +690,11 @@ def build_incident_message(details, incident, emoji, nastanek, pub_date, lat, lo
     )
 
 
-async def post_incident_to_topic(bot, incident, topic_id):
-    detailed_data = get_incident_details(incident['link_suffix'])
-    if not detailed_data or 'value' not in detailed_data:
-        return
+def compose_incident(details, incident, extra_trim=0):
+    """Return (full message, caption trimmed to Telegram's photo caption limit).
 
-    details = detailed_data['value']
-
+    extra_trim leaves room for an extra footer (used by the radius notifications).
+    """
     # The SOS112 API now exposes approximate coordinates (wgsLatApprox/wgsLonApprox);
     # use the exact fields when present and fall back to the approximate ones.
     lat = details.get('wgsLat') or details.get('wgsLatApprox')
@@ -712,14 +717,28 @@ async def post_incident_to_topic(bot, incident, topic_id):
 
     message = build_incident_message(details, incident, emoji, formatted_nastanekCas, formatted_pub_date, lat, lon)
 
+    caption = message
+    limit = TELEGRAM_CAPTION_LIMIT - extra_trim
+    if len(caption) > limit:
+        excess = len(caption) - limit
+        caption = build_incident_message(
+            details, incident, emoji, formatted_nastanekCas, formatted_pub_date, lat, lon,
+            besedilo_limit=max(0, len(besedilo) - excess - 5))
+        logger.info(f"Incident {incident['id']}: caption shortened to {len(caption)} chars.")
+    return message, caption
+
+
+async def post_incident_to_topic(bot, incident, topic_id):
+    detailed_data = get_incident_details(incident['link_suffix'])
+    if not detailed_data or 'value' not in detailed_data:
+        return
+
+    details = detailed_data['value']
+    lat = details.get('wgsLat') or details.get('wgsLatApprox')
+    lon = details.get('wgsLon') or details.get('wgsLonApprox')
+    message, caption = compose_incident(details, incident)
+
     if lat and lon:
-        caption = message
-        if len(caption) > TELEGRAM_CAPTION_LIMIT:
-            excess = len(caption) - TELEGRAM_CAPTION_LIMIT
-            caption = build_incident_message(
-                details, incident, emoji, formatted_nastanekCas, formatted_pub_date, lat, lon,
-                besedilo_limit=max(0, len(besedilo) - excess - 5))
-            logger.info(f"Incident {incident['id']}: caption shortened to {len(caption)} chars for the map.")
         try:
             create_static_map_image(lat, lon)
         except Exception as e:
@@ -732,6 +751,66 @@ async def post_incident_to_topic(bot, incident, topic_id):
                 return
             logger.error(f"Photo post failed for incident {incident['id']}; falling back to text.")
     await retry_send_message(bot, TELEGRAM_GROUP_ID, message, message_thread_id=topic_id)
+
+
+async def notify_radius_subscribers(bot, incident, details):
+    """Send a new incident to every private chat whose tracked radius covers it.
+
+    Failures for one subscriber never abort the others, and each (chat, incident)
+    pair is recorded so a restart cannot deliver the same incident twice.
+    """
+    lat = details.get('wgsLat') or details.get('wgsLatApprox')
+    lon = details.get('wgsLon') or details.get('wgsLonApprox')
+    if not (lat and lon):
+        return
+    try:
+        matches = subscriptions.match_subscribers(lat, lon)
+    except Exception as e:
+        logger.error(f"Subscription lookup failed for incident {incident['id']}: {type(e).__name__}: {e}")
+        return
+    if not matches:
+        return
+
+    photo_path = None
+    try:
+        create_static_map_image(float(lat), float(lon), filename='subscriber_map.png')
+        photo_path = 'subscriber_map.png'
+    except Exception as e:
+        logger.warning(f"Subscriber map generation failed for incident {incident['id']}: {type(e).__name__}: {e}")
+
+    async def _send_photo(_bot, chat_id, text):
+        if not photo_path:
+            raise TelegramError("no map image")
+        with open(photo_path, 'rb') as photo_file:
+            await _bot.send_photo(chat_id=chat_id, photo=photo_file,
+                                  caption=text, parse_mode='HTML')
+        return True
+
+    async def _send_text(_bot, chat_id, text):
+        await _bot.send_message(chat_id=chat_id, text=text, parse_mode='HTML',
+                                disable_web_page_preview=True)
+
+    delivered = 0
+    for chat_id, chat_matches in matches.items():
+        try:
+            if subscriptions.already_delivered(chat_id, incident['id']):
+                continue
+            note = subscriptions.format_match_note(chat_matches)
+            _message, caption = compose_incident(details, incident, extra_trim=len(note) + 12)
+            if await subscriptions.deliver(bot, chat_id, chat_matches, caption, _send_photo, _send_text):
+                subscriptions.record_delivery(chat_id, incident['id'])
+                delivered += 1
+        except Exception as e:
+            logger.error(f"Subscriber delivery to {chat_id} failed: {type(e).__name__}: {e}")
+        await asyncio.sleep(0.5)
+
+    if photo_path:
+        try:
+            os.remove(photo_path)
+        except OSError:
+            pass
+    if delivered:
+        logger.info(f"Incident {incident['id']} sent to {delivered} subscriber(s).")
 
 
 # Function to fetch and post new incidents automatically every 3 minutes
@@ -804,6 +883,9 @@ async def auto_fetch_and_post(context: CallbackContext, initial_run=False):
                         logger.info(f"Posted incident ID {incident_id} to keyword topic: {matched_topic}")  # Log successful post
                         await asyncio.sleep(1)
 
+                # Send the incident to every private chat that tracks this area
+                await notify_radius_subscribers(context.bot, incident, details)
+
             # # If posted anywhere, delete from the All topic to avoid duplication
             # if posted_anywhere:
             #     # Remove from All topic if necessary (Add logic to delete post from All topic if needed)
@@ -846,8 +928,12 @@ async def error_handler(update: Update, context: CallbackContext):
 def main():
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     job_queue = application.job_queue
-    
-    
+
+    # Private-chat radius subscriptions (/track, /list, /remove, /stop)
+    subscriptions.prune_deliveries()
+    for handler in subscriptions.build_handlers():
+        application.add_handler(handler)
+
     # Run fetching and posting for regular incidents and vecjiObseg incidents
     job_queue.run_repeating(auto_fetch_and_post, interval=80, first=0)
     job_queue.run_repeating(fetch_and_post_vecji_obseg, interval=80, first=60)  # Run vecjiObseg fetch every 150 seconds, offset by 60 seconds

@@ -1,0 +1,10 @@
+# runtime data, not source
+subscriptions.db
+*.db-journal
+subscriber_map.png
+incident_map.png
+__pycache__/
+*.pyc
+.env
+bot.log
+SPIN112_bot_errors.log
