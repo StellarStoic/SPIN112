@@ -51,6 +51,18 @@ circle on the map stays inside the surrounding town.
 Max 15 locations per chat. The database lives in `subscriptions.db`
 (override with the `SUBSCRIPTIONS_DB` environment variable).
 
+## Lost topics repair themselves
+
+Posts go to fixed topic ids (`message_thread_id`). If a topic is deleted in
+Telegram, the API answers *message thread not found* and every post for that
+topic would be dropped. Instead the bot recreates the topic under the same name
+and remembers the new id in `topic_ids.json`, so posting resumes on the next
+incident and survives a restart. Before creating anything it probes the topic
+with `editForumTopic`, so an existing topic is never duplicated. This needs the
+bot's **Manage topics** admin right in the group; without it the error is
+logged and the post is skipped. At startup the bot logs whether it holds that
+right.
+
 ## Installation
 
 ### 1. Clone the repository:

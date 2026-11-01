@@ -16,5 +16,7 @@ SPIN112_bot_errors.log
 posted_incidents.json
 posted_vecjiObseg.json
 obcina_map.png
+# recreated topic ids (runtime, never commit)
+topic_ids.json
 /Old
 SPIN112 copy.py

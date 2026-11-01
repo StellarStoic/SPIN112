@@ -90,6 +90,95 @@ topics = {
     "Prva prijava-Nepreverjen dogodek": 3125,
 }
 
+# --- Topic id overrides ------------------------------------------------------
+# When a topic is deleted in Telegram (its message_thread_id stops existing)
+# the bot can recreate it under the same name, but the new id differs from the
+# hardcoded one above. Recreated ids are persisted here so a restart keeps
+# posting into the same topic instead of failing again.
+TOPIC_IDS_FILE = 'topic_ids.json'
+_topic_id_overrides = {}
+
+
+def topic_name_for_id(topic_id):
+    """Return the topic name that maps to ``topic_id`` (None for the main chat)."""
+    if topic_id is None:
+        return None
+    for _name, _tid in topics.items():
+        if _tid == topic_id:
+            return _name
+    return None
+
+
+def load_topic_overrides():
+    """Apply ids stored in TOPIC_IDS_FILE on top of the hardcoded map."""
+    global _topic_id_overrides
+    _topic_id_overrides = {}
+    try:
+        with open(TOPIC_IDS_FILE, 'r', encoding='utf-8') as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return
+    except Exception as exc:  # corrupt state file must not stop the bot
+        logger.error(f"Could not read {TOPIC_IDS_FILE}: {exc}")
+        return
+    if not isinstance(data, dict):
+        logger.error(f"{TOPIC_IDS_FILE} does not contain an object; ignoring it.")
+        return
+    for name, tid in data.items():
+        if name in topics and isinstance(tid, int) and tid > 0:
+            topics[name] = tid
+            _topic_id_overrides[name] = tid
+    if _topic_id_overrides:
+        logger.warning(f"Topic id overrides applied from {TOPIC_IDS_FILE}: {_topic_id_overrides}")
+
+
+def save_topic_overrides():
+    try:
+        with open(TOPIC_IDS_FILE, 'w', encoding='utf-8') as fh:
+            json.dump(_topic_id_overrides, fh, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        logger.error(f"Could not write {TOPIC_IDS_FILE}: {exc}")
+
+
+async def ensure_topic_thread(bot, chat_id, topic_id):
+    """Recreate a deleted topic and return its new message_thread_id.
+
+    Needs the bot's "Manage topics" admin right. Returns None when the topic
+    cannot be recreated (unknown id, missing right, Telegram error).
+    """
+    name = topic_name_for_id(topic_id)
+    if name is None:
+        logger.error(f"Thread id {topic_id} is not in the topic map; cannot recreate it.")
+        return None
+    # Cheap existence probe: never create a second topic when the original is
+    # still there and the send failed for some other reason.
+    probe = getattr(bot, 'edit_forum_topic', None)
+    if probe is not None:
+        try:
+            await probe(chat_id=chat_id, message_thread_id=topic_id, name=name)
+            logger.warning(f"Topic '{name}' (id {topic_id}) still exists; not recreating it.")
+            return None
+        except TelegramError as exc:
+            if 'message thread not found' not in str(exc).lower():
+                logger.warning(f"Topic '{name}' (id {topic_id}) probe failed: {exc}")
+    try:
+        created = await bot.create_forum_topic(chat_id=chat_id, name=name)
+    except TelegramError as exc:
+        logger.error(f"Topic '{name}' (id {topic_id}) is gone and could not be recreated: {exc}")
+        return None
+    new_id = getattr(created, 'message_thread_id', None)
+    if not new_id:
+        logger.error(f"Recreate of topic '{name}' returned no message_thread_id.")
+        return None
+    topics[name] = new_id
+    _topic_id_overrides[name] = new_id
+    save_topic_overrides()
+    logger.warning(
+        f"Recreated missing topic '{name}': id {topic_id} -> {new_id} (saved to {TOPIC_IDS_FILE})"
+    )
+    return new_id
+
+
 # Keyword mappings for topics
 keywords_map = {
     "Gore": ["gorah", "gore", "Triglav", "alpe", "Karavanke", "sestopu", "zdrs"],
@@ -338,12 +427,19 @@ def get_vecji_obseg_data(url):
 # Function to handle retries for sending messages with a properly defined message parameter
 async def retry_send_message(bot, chat_id, text, message_thread_id=None, retries=5):
     """Send an HTML message. Returns the sent Message, or None on failure."""
+    healed = False
     for attempt in range(retries):
         try:
             return await bot.send_message(chat_id=chat_id, text=text, parse_mode='HTML', message_thread_id=message_thread_id)
         except BadRequest as e:
             logger.error(f"Failed to send message: {e}")
             if 'message thread not found' in str(e).lower():
+                if not healed:
+                    healed = True
+                    new_id = await ensure_topic_thread(bot, chat_id, message_thread_id)
+                    if new_id:
+                        message_thread_id = new_id
+                        continue
                 logger.error(f"Invalid message thread ID: {message_thread_id}. Skipping this post.")
                 break
             if 'chat not found' in str(e).lower() or 'message is too long' in str(e).lower():
@@ -569,6 +665,7 @@ def match_keywords_in_dogodek(dogodekNaziv):
 # Function to handle retries for sending photos
 async def retry_send_photo(bot, chat_id, photo, caption, message_thread_id=None, retries=5):
     """Send a photo with an HTML caption. Returns the sent Message, or None on failure."""
+    healed = False
     for attempt in range(retries):
         try:
             with open(photo, 'rb') as img_file:
@@ -577,6 +674,12 @@ async def retry_send_photo(bot, chat_id, photo, caption, message_thread_id=None,
         except BadRequest as e:
             logger.error(f"Failed to send photo: {e}")
             if 'message thread not found' in str(e).lower():
+                if not healed:
+                    healed = True
+                    new_id = await ensure_topic_thread(bot, chat_id, message_thread_id)
+                    if new_id:
+                        message_thread_id = new_id
+                        continue
                 logger.error(f"Invalid message thread ID: {message_thread_id}. Skipping this post.")
                 break
             if 'caption is too long' in str(e).lower() or 'wrong file identifier' in str(e).lower():
@@ -1052,8 +1155,37 @@ async def auto_fetch_and_post_nepreverjeni(context: CallbackContext, initial_run
 async def error_handler(update: Update, context: CallbackContext):
     logger.error(f"An error occurred: {context.error}")
     
+async def log_topic_capabilities(application):
+    """Tell the operator whether a deleted topic can be recreated automatically."""
+    expected = os.getenv('EXPECTED_BOT_USERNAME', 'nasoncnistranialpbot').lstrip('@')
+    if application.bot.username and application.bot.username.lower() != expected.lower():
+        logger.warning(
+            f"Posting with @{application.bot.username}, but the production bot is "
+            f"@{expected}. eusafetybot is retired; check TELEGRAM_BOT_TOKEN."
+        )
+    else:
+        logger.info(f"Posting with the expected bot @{application.bot.username}")
+    try:
+        member = await application.bot.get_chat_member(
+            chat_id=TELEGRAM_GROUP_ID, user_id=application.bot.id
+        )
+        can_manage = bool(getattr(member, 'can_manage_topics', False))
+        logger.info(
+            f"Bot @{application.bot.username} is '{member.status}' in {TELEGRAM_GROUP_ID}; "
+            f"can_manage_topics={can_manage}"
+        )
+        if not can_manage:
+            logger.warning(
+                "Bot cannot manage topics: a deleted topic cannot be recreated. "
+                "Grant 'Manage topics' in the group's admin settings for it."
+            )
+    except Exception as exc:  # informational only
+        logger.warning(f"Could not read bot admin rights: {exc}")
+
+
 async def register_bot_commands(application):
     """Expose the subscription commands in Telegram's command menu."""
+    await log_topic_capabilities(application)
     try:
         await application.bot.set_my_commands([
             BotCommand("track", "Dodaj lokacijo (kraj, občina ali koordinate)"),
@@ -1069,6 +1201,7 @@ async def register_bot_commands(application):
 
 # Main function to start the bot
 def main():
+    load_topic_overrides()
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(register_bot_commands).build()
     job_queue = application.job_queue
 
