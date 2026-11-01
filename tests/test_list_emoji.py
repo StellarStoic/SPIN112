@@ -1,4 +1,4 @@
-"""Every watch kind gets its own shape in /list: triangle, rectangle, circle.
+"""Every watch kind gets its own shape in /list: heart, rectangle, circle.
 
 Municipalities are drawn as a border on the map, geohashes as a cell rectangle
 and radius watches as a circle - the list must use the same three shapes so the
@@ -55,9 +55,9 @@ def test_geohash_uses_a_rectangle():
     assert S.kind_emoji(row) == "🔲"
 
 
-def test_municipality_uses_a_triangle():
+def test_municipality_uses_a_heart():
     row = _row(kind="obcina", ob_name="Ptuj", radius_km=0.0)
-    assert S.kind_emoji(row) == "🔺"
+    assert S.kind_emoji(row) == "❤️"
 
 
 def test_unknown_kind_falls_back_to_a_circle():
@@ -73,13 +73,13 @@ def test_list_line_carries_the_shape_before_the_scope():
     caption = S._list_caption(rows)
     assert "🔵 <code>1</code> · <b>Dom</b>" in caption, caption
     assert "🔲 <code>2</code> · <b>Celica</b> · celica u24q4b" in caption, caption
-    assert "🔺 <code>3</code> · <b>Obcina</b> · cela občina Ptuj" in caption, caption
+    assert "❤️ <code>3</code> · <b>Obcina</b> · cela občina Ptuj" in caption, caption
     assert "🔴" not in caption and "🟢" not in caption, caption
 
 
 def test_legend_names_all_three_shapes():
     legend = S._list_caption([_row()]).split("Oblika pove")[1]
-    for shape in ("🔺", "🔲", "🔵"):
+    for shape in ("❤️", "🔲", "🔵"):
         assert shape in legend, legend
 
 

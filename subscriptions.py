@@ -369,13 +369,14 @@ def describe_subscription(row):
 
 
 # One shape per watch kind, so the list reads at a glance and matches what the
-# map draws: a triangle for a municipality border, a rectangle for a geohash
-# cell, a circle for a radius.
-KIND_EMOJI = {"obcina": "🔺", "geohash": "🔲", "circle": "🔵"}
+# map draws: a heart for a municipality border, a rectangle for a geohash cell,
+# a circle for a radius. (There is no triangle emoji that renders on every
+# client, so municipalities use a heart instead.)
+KIND_EMOJI = {"obcina": "❤️", "geohash": "🔲", "circle": "🔵"}
 
 
 def kind_emoji(row):
-    """Shape marker for a subscription row: triangle, rectangle or circle."""
+    """Shape marker for a subscription row: heart, rectangle or circle."""
     if (row.get("geohash") or "").strip():
         return KIND_EMOJI["geohash"]
     return KIND_EMOJI.get(row.get("kind") or "circle", KIND_EMOJI["circle"])
@@ -1725,7 +1726,7 @@ def _list_caption(rows):
             f" · {scope}{coords}{kinds}"
         )
     lines.append("")
-    lines.append("Oblika pove vrsto območja: 🔺 meja občine, 🔲 geohash celica, "
+    lines.append("Oblika pove vrsto območja: ❤️ meja občine, 🔲 geohash celica, "
                  "🔵 območje s polmerom; številke se ujemajo z oznakami na zemljevidu. "
                  "Odstranitev: /remove &lt;številka&gt; ali gumb spodaj. "
                  "Vrste dogodkov: /topics.")
