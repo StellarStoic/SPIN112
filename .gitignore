@@ -11,3 +11,10 @@ __pycache__/
 .env
 bot.log
 SPIN112_bot_errors.log
+
+# dedupe state and stray artifacts (runtime, never commit)
+posted_incidents.json
+posted_vecjiObseg.json
+obcina_map.png
+/Old
+SPIN112 copy.py
