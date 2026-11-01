@@ -26,7 +26,7 @@ group / topic / keyword posting is unaffected.
 
 | Command | What it does |
 | --- | --- |
-| `/track` | Add a place: type a village/town or municipality name, or coordinates plus radius (`46.2397 14.3567 10`). The bot proposes a radius (`1`, `5`, `10`, `25`, `50` km or your own 1–100 km), asks for a name, then asks which incident kinds to follow. |
+| `/track` | Add a place: type a village/town or municipality name, coordinates plus radius (`46.2397 14.3567 10`) or a geohash (`gh:u24q4b`). A geohash is a rectangle, so the bot watches exactly that cell and never asks for a radius. Otherwise it proposes a radius (`1`, `5`, `10`, `25`, `50` km or your own 1–100 km), asks for a name, then asks which incident kinds to follow. |
 | `/list` | Show all followed locations on a map with their radius circles and municipality borders. Areas are drawn translucent, and every outline is drawn on top, so a lower area's border stays visible where a circle or another municipality covers it. |
 | `/topics` | Change the incident kinds of an already saved location (`/topics 3` or pick it from the list). |
 | `/remove` | Delete one followed location (with confirmation). |

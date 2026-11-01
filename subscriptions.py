@@ -63,6 +63,18 @@ RADIUS_PRESETS = (1, 5, 10, 25, 50)
 SI_LAT_MIN, SI_LAT_MAX = 45.35, 46.95
 SI_LON_MIN, SI_LON_MAX = 13.20, 16.80
 
+# Geohash (base32, as used by geohash.org and every geohash library).
+# A cell of n characters is roughly: 3 chars ~156 km, 4 ~39 km, 5 ~4.9 km,
+# 6 ~1.2 km, 7 ~150 m. Shorter than GEOHASH_WATCH_MIN_LEN is unusable as a
+# watch area, so those are refused with a hint to add characters.
+GEOHASH_ALPHABET = "0123456789bcdefghjkmnpqrstuvwxyz"
+GEOHASH_INDEX = {char: index for index, char in enumerate(GEOHASH_ALPHABET)}
+GEOHASH_MIN_LEN = 1
+GEOHASH_MAX_LEN = 12
+GEOHASH_WATCH_MIN_LEN = 4
+_GEOHASH_RE = re.compile(r"^[0-9bcdefghjkmnpqrstuvwxyz]+$")
+_GEOHASH_PREFIX_RE = re.compile(r"^(?:gh|geohash)\s*[:\s]\s*", re.IGNORECASE)
+
 MAX_LABEL_LEN = 60
 
 # Slovenia-focused tile styles for the overview map
@@ -138,7 +150,8 @@ def init(db_path=None, ob_features=None):
                 enabled INTEGER NOT NULL DEFAULT 1,
                 kind TEXT NOT NULL DEFAULT 'circle',
                 ob_name TEXT,
-                topics TEXT
+                topics TEXT,
+                geohash TEXT
             );
             CREATE UNIQUE INDEX IF NOT EXISTS ux_subscription
                 ON subscriptions(chat_id, label);
@@ -166,6 +179,9 @@ def init(db_path=None, ob_features=None):
         # databases created before kind filters lack this one
         if "topics" not in columns:
             conn.execute("ALTER TABLE subscriptions ADD COLUMN topics TEXT")
+        # databases created before geohash support lack this one
+        if "geohash" not in columns:
+            conn.execute("ALTER TABLE subscriptions ADD COLUMN geohash TEXT")
         conn.commit()
     logger.info("Radius subscriptions ready (%s).", DB_PATH)
 
@@ -265,16 +281,18 @@ def haversine_km(lat1, lon1, lat2, lon2):
 
 
 def add_subscription(chat_id, label, lat, lon, radius_km, kind="circle", ob_name=None,
-                     topics=None):
+                     topics=None, geohash=None):
     """Insert or update one location for one chat. Returns the row id.
 
-    ``kind`` is ``'circle'`` (a point plus radius) or ``'obcina'`` (a whole
-    municipality, matched by its polygon; radius is stored as 0). ``topics`` is
-    the optional list of incident kinds this location should report; an empty
-    list means every kind.
+    ``kind`` is ``'circle'`` (a point plus radius), ``'obcina'`` (a whole
+    municipality, matched by its polygon; radius is stored as 0) or
+    ``'geohash'`` (the exact cell rectangle of ``geohash``; radius is stored as
+    0 and never used, because a geohash cell is a rectangle, not a circle).
+    ``topics`` is the optional list of incident kinds this location should
+    report; an empty list means every kind.
     """
-    kind = "obcina" if kind == "obcina" else "circle"
-    if kind == "obcina":
+    kind = kind if kind in ("obcina", "geohash") else "circle"
+    if kind in ("obcina", "geohash"):
         radius_km = 0.0
     else:
         radius_km = max(MIN_RADIUS_KM, min(MAX_RADIUS_KM, float(radius_km)))
@@ -284,8 +302,8 @@ def add_subscription(chat_id, label, lat, lon, radius_km, kind="circle", ob_name
             """
             INSERT INTO subscriptions
                 (chat_id, label, lat, lon, radius_km, created_at, enabled, kind, ob_name,
-                 topics)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                 topics, geohash)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
             ON CONFLICT(chat_id, label) DO UPDATE SET
                 lat = excluded.lat,
                 lon = excluded.lon,
@@ -294,10 +312,11 @@ def add_subscription(chat_id, label, lat, lon, radius_km, kind="circle", ob_name
                 enabled = 1,
                 kind = excluded.kind,
                 ob_name = excluded.ob_name,
-                topics = excluded.topics
+                topics = excluded.topics,
+                geohash = excluded.geohash
             """,
             (int(chat_id), label, float(lat), float(lon), radius_km, now, kind, ob_name,
-             encode_topics(topics)),
+             encode_topics(topics), geohash),
         )
         conn.commit()
         row_id = cur.lastrowid
@@ -309,12 +328,13 @@ def add_subscription(chat_id, label, lat, lon, radius_km, kind="circle", ob_name
             row_id = found["id"] if found else None
     logger.info(
         "Subscription saved: chat %s -> %s (%s).", chat_id, label,
-        "občina" if kind == "obcina" else "%.0f km" % radius_km,
+        "občina" if kind == "obcina" else (f"celica {geohash}" if kind == "geohash"
+                                           else "%.0f km" % radius_km),
     )
     return row_id
 
 
-_COLUMNS = "id, chat_id, label, lat, lon, radius_km, kind, ob_name, topics"
+_COLUMNS = "id, chat_id, label, lat, lon, radius_km, kind, ob_name, topics, geohash"
 
 
 def list_subscriptions(chat_id):
@@ -337,10 +357,14 @@ def get_subscription(chat_id, sub_id):
 
 
 def describe_subscription(row):
-    """Human readable one-liner, e.g. '10 km' or 'cela občina Ptuj'."""
-    if (row.get("kind") or "circle") == "obcina":
+    """Human readable one-liner, e.g. '10 km', 'cela občina Ptuj' or 'celica u24q4b'."""
+    kind = row.get("kind") or "circle"
+    geohash = (row.get("geohash") or "").strip()
+    if kind == "obcina":
         name = (row.get("ob_name") or "").strip()
         return f"cela občina {name}" if name else "cela občina"
+    if kind == "geohash" or geohash:
+        return f"celica {geohash}" if geohash else "celica"
     return f"{(row.get('radius_km') or 0):g} km"
 
 
@@ -412,7 +436,9 @@ def match_subscribers(lat, lon, topics=None):
     """Return {chat_id: [(label, distance_km, radius_km), ...]} for one incident.
 
     Circle subscriptions match by distance; občina subscriptions match by their
-    polygon, so an incident anywhere inside the municipality counts.
+    polygon, so an incident anywhere inside the municipality counts; geohash
+    subscriptions match by their cell rectangle – the incident only has to fall
+    inside the box, because a geohash is a rectangle and has no radius.
 
     ``topics`` holds the incident's kinds (the same names the group topics use).
     A subscription with its own kind filter only matches when the two overlap;
@@ -424,7 +450,7 @@ def match_subscribers(lat, lon, topics=None):
     matches = {}
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT chat_id, label, lat, lon, radius_km, kind, ob_name, topics "
+            "SELECT chat_id, label, lat, lon, radius_km, kind, ob_name, topics, geohash "
             "FROM subscriptions WHERE enabled = 1"
         ).fetchall()
     for row in rows:
@@ -433,8 +459,16 @@ def match_subscribers(lat, lon, topics=None):
             if allowed and not (allowed & wanted):
                 continue
         distance = haversine_km(lat, lon, row["lat"], row["lon"])
-        if (row["kind"] or "circle") == "obcina":
+        kind = row["kind"] or "circle"
+        if kind == "obcina":
             if point_in_obcina(lat, lon, row["ob_name"]):
+                matches.setdefault(row["chat_id"], []).append(
+                    (row["label"], distance, 0.0)
+                )
+            continue
+        if kind == "geohash":
+            box = geohash_bbox(row["geohash"])
+            if box and point_in_box(lat, lon, box):
                 matches.setdefault(row["chat_id"], []).append(
                     (row["label"], distance, 0.0)
                 )
@@ -709,6 +743,12 @@ def _render_plain_map(rows, path, width, height):
                     continue
                 overview.add_polygon(Polygon(ring, fill, outline))
                 overview.add_line(Line(list(ring) + [ring[0]], outline, 3))
+        elif (row.get("kind") or "circle") == "geohash":
+            box = geohash_bbox(row.get("geohash"))
+            if box:
+                ring = box_ring(box)
+                overview.add_polygon(Polygon(ring, fill, outline))
+                overview.add_line(Line(ring, outline, 3))
         else:
             ring = circle_ring(row["lat"], row["lon"], row.get("radius_km") or MIN_RADIUS_KM)
             overview.add_polygon(Polygon(ring, fill, outline))
@@ -739,6 +779,10 @@ def render_subscriptions_map(rows, path, width=1000, height=760):
             for ring in OB_RINGS.get(key) or []:
                 if len(ring) >= 3:
                     shapes.append((ring, rgb, rgb))
+        elif (row.get("kind") or "circle") == "geohash":
+            box = geohash_bbox(row.get("geohash"))
+            if box:
+                shapes.append((box_ring(box), rgb, rgb))
         else:
             shapes.append((circle_ring(row["lat"], row["lon"],
                                        row.get("radius_km") or MIN_RADIUS_KM), rgb, rgb))
@@ -777,6 +821,13 @@ HELP_TEXT = (
     "polmer v km). Polmer lahko izpustite in bot vas bo vprašal zanj. "
     "Vrstni red je vedno <i>širina (lat) dolžina (lon) polmer</i>; decimalna "
     "pika ali vejica sta enako veljavni.\n"
+    "<b>/track gh:&lt;geohash&gt;</b> – dodaj celico po geohashu, npr. "
+    "<code>/track gh:u24q4b</code> (Ljubljana). Geohash je kratek niz iz črk in "
+    "številk (npr. iz geohash.org ali katerekoli geohash aplikacije); daljši niz "
+    "pomeni manjše območje. Spremlja se <b>točno ta celica</b> – geohash je "
+    "pravokotnik, zato polmera ni in bot vas zanj ne vpraša. Geohash brez "
+    "predpone <code>gh:</code> prepozna tudi takrat, ko kraja z istim imenom ne "
+    "najde.\n"
     "<b>/track Občina Ptuj</b> – pri občinah bot ponudi tudi »cela občina«, "
     "brez polmera: obvestilo dobiš, kadar je intervencija kjerkoli znotraj meje "
     "občine.\n"
@@ -827,7 +878,7 @@ async def _refuse_group(update, context):
 
 
 def _radius_keyboard(ob_name=None):
-    """Radius presets; municipalities get an extra "whole municipality" row."""
+    """Radius presets; municipalities get a whole-municipality row."""
     buttons = [
         InlineKeyboardButton(f"{km} km", callback_data=f"rad:{km}") for km in RADIUS_PRESETS
     ]
@@ -907,6 +958,176 @@ def _in_slovenia(lat, lon):
     return SI_LAT_MIN <= lat <= SI_LAT_MAX and SI_LON_MIN <= lon <= SI_LON_MAX
 
 
+def is_geohash(text, min_len=GEOHASH_MIN_LEN):
+    """True when ``text`` is nothing but geohash characters of a sane length."""
+    token = (text or "").strip().lower()
+    return (
+        GEOHASH_MIN_LEN <= len(token) <= GEOHASH_MAX_LEN
+        and _GEOHASH_RE.match(token) is not None
+    ) and len(token) >= min_len
+
+
+def decode_geohash(geohash):
+    """Decode a geohash to (lat, lon, lat_err, lon_err) or None if invalid.
+
+    ``lat_err``/``lon_err`` are the half-sizes of the cell in degrees, so the
+    cell spans ``lat ± lat_err`` and ``lon ± lon_err``.
+    """
+    token = (geohash or "").strip().lower()
+    if not token or not _GEOHASH_RE.match(token) or len(token) > GEOHASH_MAX_LEN:
+        return None
+    lat_min, lat_max, lon_min, lon_max = -90.0, 90.0, -180.0, 180.0
+    even = True  # geohash interleaves bits, starting with longitude
+    for char in token:
+        index = GEOHASH_INDEX[char]
+        for bit in (16, 8, 4, 2, 1):
+            if even:
+                mid = (lon_min + lon_max) / 2
+                if index & bit:
+                    lon_min = mid
+                else:
+                    lon_max = mid
+            else:
+                mid = (lat_min + lat_max) / 2
+                if index & bit:
+                    lat_min = mid
+                else:
+                    lat_max = mid
+            even = not even
+    return (
+        (lat_min + lat_max) / 2,
+        (lon_min + lon_max) / 2,
+        (lat_max - lat_min) / 2,
+        (lon_max - lon_min) / 2,
+    )
+
+
+def encode_geohash(lat, lon, precision=6):
+    """Encode a point to a geohash of ``precision`` characters."""
+    precision = max(GEOHASH_MIN_LEN, min(GEOHASH_MAX_LEN, int(precision)))
+    lat_min, lat_max, lon_min, lon_max = -90.0, 90.0, -180.0, 180.0
+    bits, even = [], True
+    while len(bits) < precision * 5:
+        if even:
+            mid = (lon_min + lon_max) / 2
+            if lon >= mid:
+                bits.append(1)
+                lon_min = mid
+            else:
+                bits.append(0)
+                lon_max = mid
+        else:
+            mid = (lat_min + lat_max) / 2
+            if lat >= mid:
+                bits.append(1)
+                lat_min = mid
+            else:
+                bits.append(0)
+                lat_max = mid
+        even = not even
+    out = []
+    for start in range(0, len(bits), 5):
+        value = 0
+        for bit in bits[start:start + 5]:
+            value = (value << 1) | bit
+        out.append(GEOHASH_ALPHABET[value])
+    return "".join(out)
+
+
+def geohash_bbox(geohash):
+    """Decode a cell to (lat_min, lat_max, lon_min, lon_max), or None if invalid.
+
+    A geohash cell is a rectangle in lat/lon, so this is the watch area itself –
+    there is no radius anywhere in the geohash path.
+    """
+    decoded = decode_geohash(geohash)
+    if not decoded:
+        return None
+    lat, lon, lat_err, lon_err = decoded
+    return (lat - lat_err, lat + lat_err, lon - lon_err, lon + lon_err)
+
+
+def point_in_box(lat, lon, box):
+    """True when the point falls inside a (lat_min, lat_max, lon_min, lon_max) box."""
+    lat_min, lat_max, lon_min, lon_max = box
+    return lat_min <= lat <= lat_max and lon_min <= lon <= lon_max
+
+
+def box_ring(box):
+    """Closed [(lon, lat), ...] ring that draws a lat/lon box as a rectangle."""
+    lat_min, lat_max, lon_min, lon_max = box
+    return [
+        (lon_min, lat_min),
+        (lon_max, lat_min),
+        (lon_max, lat_max),
+        (lon_min, lat_max),
+        (lon_min, lat_min),
+    ]
+
+
+def geohash_cell_size_km(geohash):
+    """Approximate (width_km, height_km) of a cell, for user-facing messages."""
+    box = geohash_bbox(geohash)
+    if not box:
+        return None
+    lat_min, lat_max, lon_min, lon_max = box
+    mid = (lat_min + lat_max) / 2
+    height = (lat_max - lat_min) * 111.32
+    width = (lon_max - lon_min) * 111.32 * max(math.cos(math.radians(mid)), 1e-6)
+    return width, height
+
+
+def parse_geohash_input(text, require_prefix=False):
+    """Parse 'gh:u24q4b', 'geohash u24q4b' or a bare 'u24q4b'.
+
+    Returns a dict with the decoded centre, the exact cell rectangle (``bbox``)
+    and its size. A trailing number is still accepted so that old habits do not
+    break, but geohash cells are rectangles, so the caller ignores it.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    explicit = False
+    match = _GEOHASH_PREFIX_RE.match(raw)
+    if match:
+        explicit = True
+        raw = raw[match.end():].strip()
+    elif require_prefix:
+        return None
+    tokens = [token for token in re.split(r"[\s;]+", raw) if token]
+    # "gh:u24q4b,10" is a hash and a radius, while "gh:u24q4b 2,5" uses a comma
+    # as the decimal mark; both should end up as exactly two tokens.
+    if len(tokens) == 1 and "," in tokens[0]:
+        head, _, tail = tokens[0].partition(",")
+        if is_geohash(head) and _NUMBER_RE.match(tail):
+            tokens = [head, tail]
+    if not 1 <= len(tokens) <= 2:
+        return None
+    token = tokens[0].lower()
+    if not is_geohash(token):
+        return None
+    radius = None
+    if len(tokens) == 2:
+        if not _NUMBER_RE.match(tokens[1]):
+            return None
+        radius = float(tokens[1].replace(",", "."))
+        if radius <= 0:
+            return None
+    decoded = decode_geohash(token)
+    if not decoded:
+        return None
+    lat, lon, _lat_err, _lon_err = decoded
+    return {
+        "geohash": token,
+        "lat": lat,
+        "lon": lon,
+        "bbox": geohash_bbox(token),
+        "size_km": geohash_cell_size_km(token),
+        "radius_km": radius,
+        "explicit": explicit,
+    }
+
+
 def _clear_pending(context):
     for key in ("pending", "candidate", "candidates", "pending_query",
                 "topic_selection", "topic_edit", "topic_header"):
@@ -921,8 +1142,10 @@ async def cmd_track(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not query:
         await update.effective_message.reply_text(
             "Katero mesto, vas ali občino želite spremljati?\n"
-            "Pošljite ime (<i>Ljubljana</i>, <i>Videm pri Ptuju</i>) ali koordinate "
-            "(<code>46.2397 14.3567 5</code> – širina, dolžina, polmer v km).\n"
+            "Pošljite ime (<i>Ljubljana</i>, <i>Videm pri Ptuju</i>), koordinate "
+            "(<code>46.2397 14.3567 5</code> – širina, dolžina, polmer v km) ali "
+            "geohash (<code>gh:u24q4b</code> – spremlja se točno ta celica, "
+            "brez polmera).\n"
             "Za preklic: /cancel",
             parse_mode="HTML",
         )
@@ -931,11 +1154,21 @@ async def cmd_track(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _start_from_text(update, context, text, from_callback=False):
-    """Route user input: a coordinate triple goes to the name prompt, else geocode."""
+    """Route user input: geohash, coordinate triple, or a place name."""
+    geohash = parse_geohash_input(text, require_prefix=True)
+    if geohash is not None:
+        return _state_for(await _use_geohash(update, context, geohash, from_callback))
     parsed = parse_coordinates(text)
     if parsed is None:
         return await _show_candidates(update, context, text)
     outcome = await _use_coordinates(update, context, parsed, from_callback)
+    if outcome == "name":
+        return NAME
+    return RADIUS if outcome == "radius" else PLACE
+
+
+def _state_for(outcome):
+    """Map an _use_* outcome to the conversation state to wait in."""
     if outcome == "name":
         return NAME
     return RADIUS if outcome == "radius" else PLACE
@@ -981,6 +1214,71 @@ async def _use_coordinates(update, context, parsed, from_callback=False):
     return "name"
 
 
+async def _use_geohash(update, context, parsed, from_callback=False, implicit=False):
+    """Store a geohash cell as the rectangle it is – no radius is asked for.
+
+    Returns 'invalid' or 'name'.
+    """
+    geohash = parsed["geohash"]
+    lat, lon = parsed["lat"], parsed["lon"]
+    box = parsed.get("bbox") or geohash_bbox(geohash)
+    size = parsed.get("size_km") or geohash_cell_size_km(geohash) or (0.0, 0.0)
+    width_km, height_km = size
+    if not box:
+        await _answer(
+            update,
+            f"Geohash <code>{html.escape(geohash)}</code> ni veljaven. Poskusite znova ali /cancel.",
+            from_callback=from_callback,
+        )
+        return "invalid"
+    if len(geohash) < GEOHASH_WATCH_MIN_LEN:
+        await _answer(
+            update,
+            f"Geohash <code>{html.escape(geohash)}</code> je prevelik za spremljanje – "
+            f"celica meri ≈{width_km:.0f} × {height_km:.0f} km. Dodajte vsaj "
+            f"{GEOHASH_WATCH_MIN_LEN - len(geohash)} znakov (npr. "
+            f"<code>{encode_geohash(lat, lon, GEOHASH_WATCH_MIN_LEN)}</code> "
+            "za območje velikosti mesta). Poskusite znova ali /cancel.",
+            from_callback=from_callback,
+        )
+        return "invalid"
+    if not _in_slovenia(lat, lon):
+        await _answer(
+            update,
+            f"Središče geohasha <code>{html.escape(geohash)}</code> "
+            f"(<code>{lat:.4f}, {lon:.4f}</code>) ni v Sloveniji. "
+            "Poskusite znova ali /cancel.",
+            from_callback=from_callback,
+        )
+        return "invalid"
+    detected = " (prebral sem ga kot geohash)" if implicit else ""
+    context.user_data.pop("candidate", None)
+    context.user_data["pending"] = {
+        "label": f"Geohash {geohash}",
+        "lat": lat,
+        "lon": lon,
+        "kind": "geohash",
+        "ob_name": None,
+        "geohash": geohash,
+        "bbox": box,
+        "size_km": (width_km, height_km),
+    }
+    lat_min, lat_max, lon_min, lon_max = box
+    note = ""
+    if parsed.get("radius_km"):
+        note = "\nPolmer pri geohashu ne velja – spremljam točno to celico."
+    await _answer(
+        update,
+        f"🔲 Geohash <code>{html.escape(geohash)}</code>{detected}\n"
+        f"Celica (pravokotnik) ≈{width_km:.1f} × {height_km:.1f} km: "
+        f"<code>{lat_min:.4f}, {lon_min:.4f}</code> – "
+        f"<code>{lat_max:.4f}, {lon_max:.4f}</code>.{note}",
+        from_callback=from_callback,
+    )
+    await _ask_name(update, context, from_callback)
+    return "name"
+
+
 async def _ask_name(update, context, from_callback=False):
     """Always ask what the new location should be called."""
     pending = context.user_data.get("pending") or {}
@@ -988,7 +1286,10 @@ async def _ask_name(update, context, from_callback=False):
     details = []
     if pending.get("label"):
         details.append(f"📍 <code>{html.escape(pending['label'])}</code>")
-    if pending.get("radius_km"):
+    if pending.get("geohash"):
+        details.append(f"🔲 celica <code>{html.escape(pending['geohash'])}</code> "
+                       "(pravokotnik, brez polmera)")
+    elif pending.get("radius_km"):
         details.append(f"polmer {pending['radius_km']:g} km")
     if pending.get("ob_name"):
         details.append(f"občina {html.escape(pending['ob_name'])}")
@@ -1049,12 +1350,18 @@ async def _commit(update, context, label, from_callback=False, topics=None):
         return ConversationHandler.END
     kind = pending.get("kind", "circle")
     radius_km = pending.get("radius_km") or 0.0
+    geohash = pending.get("geohash")
     await asyncio.to_thread(
         add_subscription, chat_id, label, pending["lat"], pending["lon"],
-        radius_km, kind, pending.get("ob_name"), topics,
+        radius_km, kind, pending.get("ob_name"), topics, geohash,
     )
     if kind == "obcina":
         scope = f"cela občina <b>{html.escape(pending.get('ob_name') or '')}</b>"
+    elif kind == "geohash" or geohash:
+        scope = (
+            f"celica geohasha <code>{html.escape(geohash or '')}</code> "
+            "(pravokotnik, brez polmera)"
+        )
     else:
         scope = f"polmer {radius_km:g} km"
     verb = "Posodobljeno" if same_label else "Dodano"
@@ -1075,10 +1382,14 @@ async def _show_candidates(update, context, query):
     context.user_data["pending_query"] = query
     candidates = await asyncio.to_thread(geocode, query)
     if not candidates:
+        geohash = parse_geohash_input(query)
+        if geohash is not None:
+            outcome = await _use_geohash(update, context, geohash, implicit=True)
+            return _state_for(outcome)
         await update.effective_message.reply_text(
             f"Za »{html.escape(query)}« nisem našel nobenega kraja v Sloveniji.\n"
-            "Poskusite z drugačnim imenom ali vnesite koordinate "
-            "(<code>46.2397 14.3567 5</code>)."
+            "Poskusite z drugačnim imenom, vnesite koordinate "
+            "(<code>46.2397 14.3567 5</code>) ali geohash (<code>gh:u24q4b</code>)."
         )
         return PLACE
     if len(candidates) == 1:

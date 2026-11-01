@@ -74,6 +74,7 @@ SQLite table `subscriptions`:
 | `kind` | `circle` or `obcina` |
 | `ob_name` | municipality name (uppercase key into `OB_RINGS`) when `kind='obcina'` |
 | `topics` | `|`-separated topic keys, empty = all kinds |
+| `geohash` | the cell the circle came from (`u24q4b`), empty for name/coordinate rows |
 
 Table `deliveries(chat_id, incident_id, sent_at)` records what has been DM'd so a
 restart cannot send the same incident twice; rows older than
@@ -99,12 +100,39 @@ migrated in place, so keep migrations additive.
 /track
   -> place name (Nominatim, either candidate towns/villages or municipalities)
      or coordinates "lat lon [radius]" (also "lat, lon, radius", comma decimals)
+     or a geohash "gh:u24q4b" (prefix optional when geocoding finds nothing)
   -> PICK candidate from an inline keyboard
   -> RADIUS preset buttons (1, 5, 10, 25, 50 km) | "✏️ drugo" (1–100 km) | municipality option
+     (geohash input skips this step entirely – a cell has no radius)
   -> NAME (mandatory free-text name, or the suggested button)
   -> TOPICS toggle keyboard (empty = all kinds) + "Shrani"
   -> _commit() -> add_subscription()
 ```
+
+### Geohash locations
+
+A geohash is a **rectangle**, so it is stored as the cell itself: the row gets
+`kind = 'geohash'`, `radius_km = 0` and the hash in `geohash`, and
+`match_subscribers()` tests the incident with `point_in_box()` instead of
+haversine. Nothing in the geohash path asks for or uses a radius.
+
+* `is_geohash()`, `decode_geohash()` (centre + half-extents), `encode_geohash()`.
+* `geohash_bbox(gh)` → `(lat_min, lat_max, lon_min, lon_max)` is the watch area;
+  `point_in_box(lat, lon, box)` is the whole matching rule; `box_ring(box)` is the
+  closed lon/lat ring the map draws; `geohash_cell_size_km(gh)` →
+  `(width_km, height_km)` exists only for messages.
+* `parse_geohash_input(text, require_prefix=False)` accepts `gh:<hash>`,
+  `geohash <hash>`, a bare `<hash>` and reports `bbox` + `size_km` + `explicit`.
+  A trailing number (`gh:u24q4b 10`) is accepted so old habits do not break, but
+  it is **ignored** – the cell is the area.
+* Routing: `_start_from_text()` tries a **prefixed** geohash first, then
+  coordinates, then geocoding. A bare hash is only tried after geocoding returns
+  nothing, so places whose names look hash-ish still win.
+* `GEOHASH_WATCH_MIN_LEN = 4` (~39 km cell). Shorter hashes are refused with the
+  cell size in km and a hint suggesting `encode_geohash(lat, lon, 4)`; the centre
+  must be inside the Slovenia bounding box.
+* `_use_geohash()` stores `bbox` in `pending` and returns `'name'` straight away
+  (or `'invalid'`), so no radius keyboard is ever built for a geohash.
 
 All handlers are private-chat only (`_private_only`, `_refuse_group`), the state
 lives in `context.user_data["pending"]`. `RADIUS_PRESETS` is the single source for
@@ -153,6 +181,7 @@ TELEGRAM_BOT_TOKEN=123:TEST TELEGRAM_GROUP_ID=-1001234567890 \
 | `test_topic_flow.py` | the real handlers driven by fake Update/Context objects |
 | `test_nepreverjeni.py` | first-reports feed helpers |
 | `test_map_render.py` | polygon transparency, border order, marker order, 1 km preset |
+| `test_geohash.py` | decode/encode round trips, parsing, cell radius, geohash DM flow, schema migration |
 
 Run every file before deploying; they must all end in `0 failed`.
 

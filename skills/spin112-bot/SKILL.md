@@ -22,7 +22,7 @@ conversation states, the map renderer and the deploy host.
 4. Run every test file (they are plain scripts, no pytest):
 
    ```sh
-   for t in test_radius test_topic test_topic_flow test_nepreverjeni test_map_render; do
+   for t in test_radius test_topic test_topic_flow test_nepreverjeni test_map_render test_geohash; do
      TELEGRAM_BOT_TOKEN=123:TEST TELEGRAM_GROUP_ID=-1001234567890 \
        "/c/Program Files/Python311/python.exe" tests/$t.py || echo "FAILED: $t"
    done
@@ -54,6 +54,14 @@ conversation states, the map renderer and the deploy host.
   3 per row, `HELP_TEXT` and `README.md` phrase them to the user.
 * Topic filter keys are the exact group-topic strings; an empty selection means
   "all kinds", and incidents with an unknown kind are never filtered out.
+* Geohash subscriptions are **rectangles, not circles**: the row stores
+  `kind = 'geohash'`, `radius_km = 0` and the hash, and `match_subscribers()`
+  tests incidents with `point_in_box(lat, lon, geohash_bbox(gh))`; the map draws
+  `box_ring()` polygons. Their radius is not asked for and must never be used.
+  `GEOHASH_WATCH_MIN_LEN` (4) is where a hash becomes usable; parsing stays
+  tolerant (`gh:`/`geohash`/bare hash, comma decimals, a trailing radius token
+  that is accepted-but-ignored) and the bare-hash attempt stays *after*
+  geocoding so place names still win.
 * Never repost incidents: `posted_incidents.json` is authoritative, do not clear
   it or backfill the group.
 * Keep host names, addresses and account names out of anything pushed or posted.
