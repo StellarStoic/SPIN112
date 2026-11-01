@@ -26,8 +26,8 @@ group / topic / keyword posting is unaffected.
 
 | Command | What it does |
 | --- | --- |
-| `/track` | Add a place: type a village/town or municipality name, or coordinates plus radius (`46.2397 14.3567 10`). The bot proposes a radius, asks for a name, then asks which incident kinds to follow. |
-| `/list` | Show all followed locations on a map with their radius circles. |
+| `/track` | Add a place: type a village/town or municipality name, or coordinates plus radius (`46.2397 14.3567 10`). The bot proposes a radius (`1`, `5`, `10`, `25`, `50` km or your own 1–100 km), asks for a name, then asks which incident kinds to follow. |
+| `/list` | Show all followed locations on a map with their radius circles and municipality borders. Areas are drawn translucent, and every outline is drawn on top, so a lower area's border stays visible where a circle or another municipality covers it. |
 | `/topics` | Change the incident kinds of an already saved location (`/topics 3` or pick it from the list). |
 | `/remove` | Delete one followed location (with confirmation). |
 | `/stop` | Delete every followed location and stop the DMs. |
@@ -44,6 +44,9 @@ the incident's intervention type *or* its keyword match, exactly like the group
 topics — so choosing `Športne aktivnosti` or `Gore` also catches incidents whose
 title mentions sports or mountain activity. Incidents whose kind cannot be
 determined are not filtered out.
+
+`1 km` is the super-local option: it follows a single street or hamlet, and the
+circle on the map stays inside the surrounding town.
 
 Max 15 locations per chat. The database lives in `subscriptions.db`
 (override with the `SUBSCRIPTIONS_DB` environment variable).

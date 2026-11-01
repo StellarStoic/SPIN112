@@ -57,7 +57,7 @@ _last_nominatim_call = 0.0
 # conversation states
 PLACE, PICK, RADIUS, RADIUS_CUSTOM, NAME, TOPICS, TOPIC_PICK = range(7)
 
-RADIUS_PRESETS = (5, 10, 25, 50)
+RADIUS_PRESETS = (1, 5, 10, 25, 50)
 
 # Slovenia bounding box, used to sanity-check hand-typed coordinates
 SI_LAT_MIN, SI_LAT_MAX = 45.35, 46.95
@@ -636,12 +636,63 @@ def circle_ring(lat, lon, radius_km, steps=96):
     ]
 
 
-def render_subscriptions_map(rows, path, width=1000, height=760):
-    """Draw every followed location (radius circles and municipality areas) on one map."""
+def _project(static_map, lon, lat):
+    """Project a (lon, lat) pair to the pixel position StaticMap will use."""
+    from staticmap.staticmap import _lat_to_y, _lon_to_x
+
+    return (
+        static_map._x_to_px(_lon_to_x(float(lon), static_map.zoom)),
+        static_map._y_to_px(_lat_to_y(float(lat), static_map.zoom)),
+    )
+
+
+def _draw_overlays(image, static_map, shapes, markers, fill_alpha=60, outline_width=3, scale=2):
+    """Composite translucent fills, all borders and the markers onto a rendered map.
+
+    Each fill goes onto its own layer and is alpha-composited in turn, so
+    overlapping areas get deeper instead of replacing each other.  Every outline
+    is drawn afterwards in a single pass, which keeps the border of an area that
+    lies *under* another one fully visible.  Drawing happens at ``scale`` x and is
+    downsampled, which is how staticmap gets its anti-aliasing.
+    """
+    from PIL import Image, ImageDraw
+
+    canvas = image.convert("RGBA")
+    rings = []
+    for ring, fill, outline in shapes:
+        points = [_project(static_map, lon, lat) for lon, lat in ring]
+        points = [(x * scale, y * scale) for x, y in points]
+        if len(points) >= 3:
+            rings.append((points, tuple(fill), tuple(outline)))
+
+    size = (static_map.width * scale, static_map.height * scale)
+    for points, fill, _outline in rings:
+        layer = Image.new("RGBA", size, (0, 0, 0, 0))
+        ImageDraw.Draw(layer).polygon(points, fill=fill + (fill_alpha,))
+        canvas = Image.alpha_composite(canvas, layer.resize(canvas.size, Image.LANCZOS))
+
+    layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    for points, _fill, outline in rings:
+        draw.line(points + [points[0]], fill=outline + (255,),
+                  width=max(1, int(outline_width)) * scale, joint="curve")
+    canvas = Image.alpha_composite(canvas, layer.resize(canvas.size, Image.LANCZOS))
+
+    layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    for (lon, lat), rgb in markers:
+        x, y = _project(static_map, lon, lat)
+        x, y, radius = x * scale, y * scale, 7 * scale
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius),
+                     fill=tuple(rgb) + (255,))
+    canvas = Image.alpha_composite(canvas, layer.resize(canvas.size, Image.LANCZOS))
+    return canvas
+
+
+def _render_plain_map(rows, path, width, height):
+    """Fallback used when StaticMap's projection helpers are unavailable."""
     from staticmap import CircleMarker, Line, Polygon, StaticMap
 
-    if not rows:
-        raise ValueError("nothing to draw")
     overview = StaticMap(
         width, height, padding_x=45, padding_y=45,
         url_template=MAP_STYLE_URLS.get("topo", MAP_STYLE_URLS["default"]),
@@ -667,6 +718,50 @@ def render_subscriptions_map(rows, path, width=1000, height=760):
     return path
 
 
+def render_subscriptions_map(rows, path, width=1000, height=760):
+    """Draw every followed location (radius circles and municipality areas) on one map.
+
+    Areas are filled translucently and every outline is drawn in a final pass, so
+    a place that sits inside a followed municipality (or two radii that overlap)
+    still shows the border of the area underneath.
+    """
+    from staticmap import Polygon, StaticMap
+
+    if not rows:
+        raise ValueError("nothing to draw")
+
+    shapes = []
+    markers = []
+    for index, row in enumerate(rows):
+        rgb = _hex_to_rgb(_subscription_color(index))
+        if (row.get("kind") or "circle") == "obcina":
+            key = (row.get("ob_name") or "").strip().upper()
+            for ring in OB_RINGS.get(key) or []:
+                if len(ring) >= 3:
+                    shapes.append((ring, rgb, rgb))
+        else:
+            shapes.append((circle_ring(row["lat"], row["lon"],
+                                       row.get("radius_km") or MIN_RADIUS_KM), rgb, rgb))
+        markers.append(((float(row["lon"]), float(row["lat"])), rgb))
+
+    overview = StaticMap(
+        width, height, padding_x=45, padding_y=45,
+        url_template=MAP_STYLE_URLS.get("topo", MAP_STYLE_URLS["default"]),
+    )
+    # Outlines/colors are empty on purpose: the polygons are only registered so
+    # StaticMap computes the same zoom and centre for them; we draw them below.
+    for ring, _fill, _outline in shapes:
+        overview.add_polygon(Polygon(ring, None, None))
+
+    try:
+        base = overview.render()
+        _draw_overlays(base, overview, shapes, markers).convert("RGB").save(path)
+    except Exception:  # pragma: no cover - only if staticmap internals change
+        logger.warning("overlay drawing failed, falling back to flat polygons", exc_info=True)
+        return _render_plain_map(rows, path, width, height)
+    return path
+
+
 HELP_TEXT = (
     "<b>SPIN112 – obveščanje po lokaciji</b>\n\n"
     "Nastavite mesta, vasi ali cele občine, ki vas zanimajo, in vsako novo "
@@ -675,7 +770,8 @@ HELP_TEXT = (
     "to je vaš osebni filter.\n\n"
     "<b>Ukazi</b>\n"
     "<b>/track &lt;kraj&gt;</b> – dodaj lokacijo po imenu. Bot poišče kraj, vi "
-    "izberete pravega in nato polmer.\n"
+    "izberete pravega in nato polmer (od 1 do 100 km; 1 km je namenjen "
+    "sledenju ene same ulice ali zaselka).\n"
     "<b>/track &lt;širina&gt; &lt;dolžina&gt; [polmer]</b> – dodaj točno točko po "
     "koordinatah, npr. <code>/track 46.2397 14.3567 5</code> (širina, dolžina, "
     "polmer v km). Polmer lahko izpustite in bot vas bo vprašal zanj. "
@@ -685,7 +781,8 @@ HELP_TEXT = (
     "brez polmera: obvestilo dobiš, kadar je intervencija kjerkoli znotraj meje "
     "občine.\n"
     "<b>/list</b> – prikaže vse vaše lokacije <i>na zemljevidu</i>, z narisanimi "
-    "polmeri in mejami občin, ter gumbe za brisanje.\n"
+    "polmeri in mejami občin, ter gumbe za brisanje. Območja so narisana "
+    "prosojno, zato ostanejo vidne tudi meje območij, ki se prekrivajo.\n"
     "<b>/remove &lt;številka&gt;</b> – odstrani lokacijo s tega seznama; bot "
     "vedno še enkrat vpraša za potrditev.\n"
     "<b>/stop</b> – izbriše vse vaše lokacije (z potrditvijo).\n"
@@ -734,7 +831,8 @@ def _radius_keyboard(ob_name=None):
     buttons = [
         InlineKeyboardButton(f"{km} km", callback_data=f"rad:{km}") for km in RADIUS_PRESETS
     ]
-    rows = [buttons[:2], buttons[2:], [InlineKeyboardButton("✏️ drugo", callback_data="rad:custom")]]
+    rows = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
+    rows.append([InlineKeyboardButton("✏️ drugo", callback_data="rad:custom")])
     if ob_name:
         rows.append(
             [InlineKeyboardButton(f"🗺 cela občina {ob_name}", callback_data="rad:obc")]
