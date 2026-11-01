@@ -368,6 +368,19 @@ def describe_subscription(row):
     return f"{(row.get('radius_km') or 0):g} km"
 
 
+# One shape per watch kind, so the list reads at a glance and matches what the
+# map draws: a triangle for a municipality border, a rectangle for a geohash
+# cell, a circle for a radius.
+KIND_EMOJI = {"obcina": "🔺", "geohash": "🔲", "circle": "🔵"}
+
+
+def kind_emoji(row):
+    """Shape marker for a subscription row: triangle, rectangle or circle."""
+    if (row.get("geohash") or "").strip():
+        return KIND_EMOJI["geohash"]
+    return KIND_EMOJI.get(row.get("kind") or "circle", KIND_EMOJI["circle"])
+
+
 def encode_topics(keys):
     """Store a kind selection as a '|' separated string; None means every kind."""
     wanted = []
@@ -1708,11 +1721,12 @@ def _list_caption(rows):
         tags = describe_topics(row)
         kinds = "" if tags == ALL_TOPICS_TEXT else f" · 🏷 {html.escape(tags)}"
         lines.append(
-            f"{_emoji(index)} <code>{row['id']}</code> · <b>{html.escape(row['label'])}</b>"
+            f"{kind_emoji(row)} <code>{row['id']}</code> · <b>{html.escape(row['label'])}</b>"
             f" · {scope}{coords}{kinds}"
         )
     lines.append("")
-    lines.append("Barve na zemljevidu se ujemajo s krogci zgoraj. "
+    lines.append("Oblika pove vrsto območja: 🔺 meja občine, 🔲 geohash celica, "
+                 "🔵 območje s polmerom; številke se ujemajo z oznakami na zemljevidu. "
                  "Odstranitev: /remove &lt;številka&gt; ali gumb spodaj. "
                  "Vrste dogodkov: /topics.")
     return "\n".join(lines)
@@ -1771,12 +1785,17 @@ async def _ask_delete(update, context, sub_id, from_callback):
         InlineKeyboardButton("✅ Da, odstrani", callback_data=f"delok:{sub_id}"),
         InlineKeyboardButton("↩️ Ne", callback_data="delno"),
     ]])
-    question = (
+    question = _remove_question(row)
+    await _answer(update, question, keyboard, from_callback=from_callback)
+
+
+def _remove_question(row):
+    """Confirm-removal text: label, shape marker and the area it covers."""
+    return (
         f"Ali res želite odstraniti <b>{html.escape(row['label'])}</b> "
-        f"({describe_subscription(row)})?\n"
+        f"({kind_emoji(row)} {describe_subscription(row)})?\n"
         "Obvestil za to območje ne boste več prejemali."
     )
-    await _answer(update, question, keyboard, from_callback=from_callback)
 
 
 async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
