@@ -3,6 +3,9 @@ subscriptions.db
 *.db-journal
 subscriber_map.png
 incident_map.png
+# unverified first-report state (runtime, never commit)
+posted_nepreverjeni_incidents.json
+posted_nepreverjeni_messages.json
 __pycache__/
 *.pyc
 .env

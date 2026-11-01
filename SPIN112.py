@@ -84,7 +84,10 @@ topics = {
     "Nevarne snovi": 463,
     
     # Večji obseg
-    "Večji obseg": 1404  # New topic ID for Večji obseg
+    "Večji obseg": 1404,  # New topic ID for Večji obseg
+
+    # Unverified first reports ("Prva prijava-Nepreverjen dogodek")
+    "Prva prijava-Nepreverjen dogodek": 3125,
 }
 
 # Keyword mappings for topics
@@ -104,6 +107,8 @@ vecji_obseg_url = "https://spin3.sos112.si/javno/assets/data/vecjiObseg.json"
 # File path for storing posted incidents
 posted_incidents_file = 'posted_incidents.json' # ID's only
 posted_vecji_obseg_file = 'posted_vecjiObseg.json'
+posted_nepreverjeni_incidents_file = 'posted_nepreverjeni_incidents.json'  # first reports already announced
+posted_nepreverjeni_messages_file = 'posted_nepreverjeni_messages.json'    # their message ids, for later deletion
 
 # GeoJSON file path for "regije" data and "občine" data
 geojson_file = "SR.geojson"
@@ -193,6 +198,11 @@ emoji_mapping = {
     "gorah": ["🏔️"],
     "zabojnikih": ["🗑️"],
     "gobarjenje": ["🍄"],
+    "prometu": ["🚥"],
+    "plaz": ["🛝"],
+    "adrenalinskih": ["🪂", "🚴", "🪃", "🎿", "🛹", "🛶"],
+    "vodi": ["🛟"],
+    "živali": ["🐶", "🐱"],
 }
 
 def get_emojis_for_keywords(*args):
@@ -327,20 +337,23 @@ def get_vecji_obseg_data(url):
 
 # Function to handle retries for sending messages with a properly defined message parameter
 async def retry_send_message(bot, chat_id, text, message_thread_id=None, retries=5):
+    """Send an HTML message. Returns the sent Message, or None on failure."""
     for attempt in range(retries):
         try:
-            # Send message using bot, ensure parse_mode is set to html
-            await bot.send_message(chat_id=chat_id, text=text, parse_mode='HTML', message_thread_id=message_thread_id)
-            return
+            return await bot.send_message(chat_id=chat_id, text=text, parse_mode='HTML', message_thread_id=message_thread_id)
         except BadRequest as e:
             logger.error(f"Failed to send message: {e}")
             if 'message thread not found' in str(e).lower():
                 logger.error(f"Invalid message thread ID: {message_thread_id}. Skipping this post.")
                 break
+            if 'chat not found' in str(e).lower() or 'message is too long' in str(e).lower():
+                break
             await asyncio.sleep(5)
+        except TelegramError as e:
+            logger.error(f"Message send attempt {attempt + 1}/{retries} failed: {e}")
+            await asyncio.sleep(5)
+    return None
 
-
-# Function to create a static map image with polygon boundaries
 def create_static_map_with_polygon(polygon_coordinates, filename='obcina_map.png', zoom=11, line_width=3, map_style='topo', saturation_level=0.7):
     """
     Create a static map image and draw a polygon border representing the region using Line object.
@@ -555,12 +568,12 @@ def match_keywords_in_dogodek(dogodekNaziv):
 
 # Function to handle retries for sending photos
 async def retry_send_photo(bot, chat_id, photo, caption, message_thread_id=None, retries=5):
-    """Send a photo with an HTML caption. Returns True when Telegram accepted it."""
+    """Send a photo with an HTML caption. Returns the sent Message, or None on failure."""
     for attempt in range(retries):
         try:
             with open(photo, 'rb') as img_file:
-                await bot.send_photo(chat_id=chat_id, photo=InputFile(img_file), caption=caption, parse_mode='HTML', message_thread_id=message_thread_id)
-            return True
+                return await bot.send_photo(chat_id=chat_id, photo=InputFile(img_file), caption=caption,
+                                            parse_mode='HTML', message_thread_id=message_thread_id)
         except BadRequest as e:
             logger.error(f"Failed to send photo: {e}")
             if 'message thread not found' in str(e).lower():
@@ -572,10 +585,8 @@ async def retry_send_photo(bot, chat_id, photo, caption, message_thread_id=None,
         except TelegramError as e:
             logger.error(f"Photo send attempt {attempt + 1}/{retries} failed: {e}")
             await asyncio.sleep(5)
-    return False
+    return None
 
-
-# Create a static map image
 def create_static_map_image(lat, lon, filename='incident_map.png', zoom=14, map_style='topo', saturation_level=0.7):
     """
     Create a static map image with a marker at the specified latitude and longitude.
@@ -728,10 +739,15 @@ def compose_incident(details, incident, extra_trim=0):
     return message, caption
 
 
-async def post_incident_to_topic(bot, incident, topic_id):
+async def post_incident_to_topic(bot, incident, topic_id, is_verified=True):
+    """Post one incident to a thread (main thread when topic_id is None).
+
+    Returns the sent Message so callers can keep its id, or None if nothing went out.
+    """
     detailed_data = get_incident_details(incident['link_suffix'])
     if not detailed_data or 'value' not in detailed_data:
-        return
+        logger.warning(f"No details found for incident {incident['id']}. Skipping.")
+        return None
 
     details = detailed_data['value']
     lat = details.get('wgsLat') or details.get('wgsLatApprox')
@@ -743,15 +759,13 @@ async def post_incident_to_topic(bot, incident, topic_id):
             create_static_map_image(lat, lon)
         except Exception as e:
             logger.error(f"Map generation failed for incident {incident['id']}: {type(e).__name__}: {e}")
-            caption = None
-        if caption is not None:
+        else:
             sent = await retry_send_photo(bot, TELEGRAM_GROUP_ID, 'incident_map.png', caption, message_thread_id=topic_id)
-            if sent:
-                logger.info(f"Posted incident {incident['id']} with map image (thread {topic_id}).")
-                return
+            if sent is not None:
+                logger.info(f"Posted incident {incident['id']} with map image (thread {topic_id}, verified={is_verified}).")
+                return sent
             logger.error(f"Photo post failed for incident {incident['id']}; falling back to text.")
-    await retry_send_message(bot, TELEGRAM_GROUP_ID, message, message_thread_id=topic_id)
-
+    return await retry_send_message(bot, TELEGRAM_GROUP_ID, message, message_thread_id=topic_id)
 
 async def notify_radius_subscribers(bot, incident, details):
     """Send a new incident to every private chat whose tracked radius covers it.
@@ -921,6 +935,105 @@ def write_posted_incidents(file_path, incident_ids):
     with open(file_path, 'w', encoding='utf-8') as file:
         json.dump(sorted_incident_ids, file, ensure_ascii=False, indent=4)
 
+def store_message_id(incident_id, message_id, chat_id, file_path):
+    """Remember which message carried an incident, so it can be deleted later."""
+    message_data = {}
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as file:
+                message_data = json.load(file)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Could not read {file_path}: {e}. Starting a fresh map.")
+    message_data[incident_id] = {'message_id': message_id, 'chat_id': chat_id}
+    try:
+        with open(file_path, 'w', encoding='utf-8') as file:
+            json.dump(message_data, file, ensure_ascii=False, indent=4)
+    except OSError as e:
+        logger.error(f"Could not write {file_path}: {e}")
+
+
+def read_posted_nepreverjeni_incidents(file_path):
+    """IDs of unverified reports already announced."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as file:
+            return set(json.load(file))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
+
+
+def write_posted_nepreverjeni_incidents(file_path, incident_ids):
+    sorted_incident_ids = sorted(list(incident_ids))
+    if len(sorted_incident_ids) > MAX_STORED_REPORTS:
+        sorted_incident_ids = sorted_incident_ids[-MAX_STORED_REPORTS:]
+    with open(file_path, 'w', encoding='utf-8') as file:
+        json.dump(sorted_incident_ids, file, ensure_ascii=False, indent=4)
+
+
+async def auto_fetch_and_post_nepreverjeni(context: CallbackContext, initial_run=False):
+    """Announce unverified first reports in their own topic.
+
+    The full feed lists every active report; a report is still unverified while it
+    has no intervention type or no description. Announced IDs are remembered so a
+    report is never posted twice, and the very first run only seeds that list
+    instead of backfilling the whole topic.
+    """
+    logger.info("Checking for new unverified incidents in the RSS feed...")
+    state_path = posted_nepreverjeni_incidents_file
+    first_time = not os.path.exists(state_path)
+    handled = read_posted_nepreverjeni_incidents(state_path)
+
+    rss_content = get_rss_feed("https://spin3.sos112.si/api/javno/ODRSS/true")
+    incidents = parse_rss_feed(rss_content)
+    logger.info(f"Number of unverified incidents found: {len(incidents)}")
+    if not incidents:
+        return
+
+    if initial_run:
+        incidents.reverse()  # oldest first
+
+    if first_time:
+        seeded = {incident['id'] for incident in incidents}
+        write_posted_nepreverjeni_incidents(state_path, seeded)
+        logger.info(f"First run: seeded {len(seeded)} existing first reports without posting them.")
+        return
+
+    topic_id = topics["Prva prijava-Nepreverjen dogodek"]
+    announced = 0
+    for incident in incidents:
+        incident_id = incident['id']
+        if incident_id in handled:
+            continue
+
+        detailed_data = get_incident_details(incident['link_suffix'])
+        if not detailed_data or 'value' not in detailed_data:
+            continue  # try again on the next pass
+
+        details = detailed_data['value']
+        besedilo = details.get('besedilo', 'N/A')
+        intervencijaVrstaNaziv = details.get('intervencijaVrstaNaziv', 'N/A')
+        unverified = ((not besedilo or besedilo == 'N/A') or
+                      (not intervencijaVrstaNaziv or intervencijaVrstaNaziv == 'N/A'))
+        if not unverified:
+            logger.info(f"Incident ID {incident_id} is not unverified. Skipping.")
+            handled.add(incident_id)  # verified reports are announced by the main flow
+            write_posted_nepreverjeni_incidents(state_path, handled)
+            continue
+
+        sent = await post_incident_to_topic(context.bot, incident, topic_id, is_verified=False)
+        if sent is not None:
+            store_message_id(incident_id, sent.message_id, TELEGRAM_GROUP_ID, posted_nepreverjeni_messages_file)
+            announced += 1
+            await asyncio.sleep(1)
+        else:
+            logger.warning(f"Failed to post unverified incident ID {incident_id}.")
+
+        handled.add(incident_id)
+        write_posted_nepreverjeni_incidents(state_path, handled)
+
+    logger.info(f"Unverified pass done: {announced} new first report(s) announced.")
+
+
+
 async def error_handler(update: Update, context: CallbackContext):
     logger.error(f"An error occurred: {context.error}")
     
@@ -937,6 +1050,7 @@ def main():
     # Run fetching and posting for regular incidents and vecjiObseg incidents
     job_queue.run_repeating(auto_fetch_and_post, interval=80, first=0)
     job_queue.run_repeating(fetch_and_post_vecji_obseg, interval=80, first=60)  # Run vecjiObseg fetch every 150 seconds, offset by 60 seconds
+    job_queue.run_repeating(auto_fetch_and_post_nepreverjeni, interval=120, first=110)  # first reports topic
     
     application.add_error_handler(error_handler)
 
