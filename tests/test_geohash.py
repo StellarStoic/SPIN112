@@ -100,7 +100,7 @@ def test_alphabet_and_recognition():
 
 
 def test_decode_reference_points():
-    # geohash.org reference sample
+    # Wikipedia reference sample
     lat, lon = S.decode_geohash("u4pruydqqvj")[:2]
     check("decode u4pruydqqvj lat ~57.64911", abs(lat - 57.64911) < 0.001, "got %.5f" % lat)
     check("decode u4pruydqqvj lon ~10.40744", abs(lon - 10.40744) < 0.001, "got %.5f" % lon)
@@ -209,8 +209,8 @@ def test_conversation_paths():
     name_msg = update.sent[-1]["text"]
     check("cell question mentions the rectangle", "pravokotnik" in cell_msg, cell_msg)
     check("cell question quotes the bounds", "–" in cell_msg, cell_msg)
-    check("cell question offers no radius", "polmer" not in cell_msg.lower(), cell_msg)
-    check("name prompt says there is no radius", "brez polmera" in name_msg, name_msg)
+    check("cell question offers no radius", "radij" not in cell_msg.lower(), cell_msg)
+    check("name prompt says there is no radius", "brez radija" in name_msg, name_msg)
     callbacks = []
     for msg in update.sent:
         keyboard = msg.get("keyboard")

@@ -117,9 +117,11 @@ def test_each_row_keeps_its_own_shape_with_its_colour():
 
 
 def test_legend_explains_colour_and_shape():
-    legend = S._list_caption([_row()]).split("Barva se ujema")[1]
+    legend = S._list_caption([_row()]).split("\n\n")[-1]   # legend only, no rows
     assert "zemljevidu" in legend, legend
     assert "ob\u010dina" in legend or "obcina" in legend, legend
+    assert "\U0001F7E5" in legend, legend          # a square stands for a geohash
+    assert "radijem" in legend and "polmer" not in legend, legend
 
 
 def test_remove_confirmation_carries_the_rows_own_marker():

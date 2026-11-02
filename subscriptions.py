@@ -63,7 +63,7 @@ RADIUS_PRESETS = (1, 5, 10, 25, 50)
 SI_LAT_MIN, SI_LAT_MAX = 45.35, 46.95
 SI_LON_MIN, SI_LON_MAX = 13.20, 16.80
 
-# Geohash (base32, as used by geohash.org and every geohash library).
+# Geohash (base32; the format is described at https://en.wikipedia.org/wiki/Geohash).
 # A cell of n characters is roughly: 3 chars ~156 km, 4 ~39 km, 5 ~4.9 km,
 # 6 ~1.2 km, 7 ~150 m. Shorter than GEOHASH_WATCH_MIN_LEN is unusable as a
 # watch area, so those are refused with a hint to add characters.
@@ -843,25 +843,26 @@ HELP_TEXT = (
     "to je vaš osebni filter.\n\n"
     "<b>Ukazi</b>\n"
     "<b>/track &lt;kraj&gt;</b> – dodaj lokacijo po imenu. Bot poišče kraj, vi "
-    "izberete pravega in nato polmer (od 1 do 100 km; 1 km je namenjen "
+    "izberete pravega in nato radij (od 1 do 100 km; 1 km je namenjen "
     "sledenju ene same ulice ali zaselka).\n"
-    "<b>/track &lt;širina&gt; &lt;dolžina&gt; [polmer]</b> – dodaj točno točko po "
+    "<b>/track &lt;širina&gt; &lt;dolžina&gt; [radij]</b> – dodaj točno točko po "
     "koordinatah, npr. <code>/track 46.2397 14.3567 5</code> (širina, dolžina, "
-    "polmer v km). Polmer lahko izpustite in bot vas bo vprašal zanj. "
-    "Vrstni red je vedno <i>širina (lat) dolžina (lon) polmer</i>; decimalna "
+    "radij v km). Radij lahko izpustite in bot vas bo vprašal zanj. "
+    "Vrstni red je vedno <i>širina (lat) dolžina (lon) radij</i>; decimalna "
     "pika ali vejica sta enako veljavni.\n"
     "<b>/track gh:&lt;geohash&gt;</b> – dodaj celico po geohashu, npr. "
     "<code>/track gh:u24q4b</code> (Ljubljana). Geohash je kratek niz iz črk in "
-    "številk (npr. iz geohash.org ali katerekoli geohash aplikacije); daljši niz "
+    "številk (glej <a href=\"https://en.wikipedia.org/wiki/Geohash\">Wikipedijo</a> "
+    "ali katerekoli geohash aplikacije); daljši niz "
     "pomeni manjše območje. Spremlja se <b>točno ta celica</b> – geohash je "
-    "pravokotnik, zato polmera ni in bot vas zanj ne vpraša. Geohash brez "
+    "pravokotnik, zato radija ni in bot vas zanj ne vpraša. Geohash brez "
     "predpone <code>gh:</code> prepozna tudi takrat, ko kraja z istim imenom ne "
     "najde.\n"
     "<b>/track Občina Ptuj</b> – pri občinah bot ponudi tudi »cela občina«, "
-    "brez polmera: obvestilo dobiš, kadar je intervencija kjerkoli znotraj meje "
+    "brez radija: obvestilo dobiš, kadar je intervencija kjerkoli znotraj meje "
     "občine.\n"
     "<b>/list</b> – prikaže vse vaše lokacije <i>na zemljevidu</i>, z narisanimi "
-    "polmeri in mejami občin, ter gumbe za brisanje. Območja so narisana "
+    "radiji in mejami občin, ter gumbe za brisanje. Območja so narisana "
     "prosojno, zato ostanejo vidne tudi meje območij, ki se prekrivajo.\n"
     "<b>/remove &lt;številka&gt;</b> – odstrani lokacijo s tega seznama; bot "
     "vedno še enkrat vpraša za potrditev.\n"
@@ -889,9 +890,9 @@ HELP_TEXT = (
     "<code>/track Ljubljana</code>\n"
     "<code>/track Videm pri Ptuju</code>\n"
     "<code>/track 46.2397 14.3567 10</code>\n"
-    "<code>/track 46.2397 14.3567</code> – polmer vpraša naslednji korak\n"
+    "<code>/track 46.2397 14.3567</code> – radij vpraša naslednji korak\n"
     "<code>/topics 2</code> – spremeni vrste dogodkov za 2. lokacijo\n\n"
-    "Obseg: polmer od 1 do 100 km, največ 15 lokacij na klepet."
+    "Obseg: radij od 1 do 100 km, največ 15 lokacij na klepet."
 )
 
 
@@ -1172,9 +1173,9 @@ async def cmd_track(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(
             "Katero mesto, vas ali občino želite spremljati?\n"
             "Pošljite ime (<i>Ljubljana</i>, <i>Videm pri Ptuju</i>), koordinate "
-            "(<code>46.2397 14.3567 5</code> – širina, dolžina, polmer v km) ali "
+            "(<code>46.2397 14.3567 5</code> – širina, dolžina, radij v km) ali "
             "geohash (<code>gh:u24q4b</code> – spremlja se točno ta celica, "
-            "brez polmera).\n"
+            "brez radija).\n"
             "Za preklic: /cancel",
             parse_mode="HTML",
         )
@@ -1214,7 +1215,7 @@ async def _use_coordinates(update, context, parsed, from_callback=False):
         await _answer(
             update,
             f"Koordinate <code>{lat:.4f}, {lon:.4f}</code> niso znotraj Slovenije.\n"
-            "Vrstni red je <b>širina (lat) dolžina (lon) polmer</b> – npr. "
+            "Vrstni red je <b>širina (lat) dolžina (lon) radij</b> – npr. "
             "<code>46.2397 14.3567 5</code>. Poskusite znova ali /cancel.",
             from_callback=from_callback,
         )
@@ -1233,8 +1234,8 @@ async def _use_coordinates(update, context, parsed, from_callback=False):
     if not (MIN_RADIUS_KM <= radius <= MAX_RADIUS_KM):
         await _answer(
             update,
-            f"Polmer mora biti med {MIN_RADIUS_KM:g} in {MAX_RADIUS_KM:g} km. "
-            f"Vpišite polmer za točko {label} (npr. 10).",
+            f"Radij mora biti med {MIN_RADIUS_KM:g} in {MAX_RADIUS_KM:g} km. "
+            f"Vpišite radij za točko {label} (npr. 10).",
             from_callback=from_callback,
         )
         return "radius"
@@ -1295,7 +1296,7 @@ async def _use_geohash(update, context, parsed, from_callback=False, implicit=Fa
     lat_min, lat_max, lon_min, lon_max = box
     note = ""
     if parsed.get("radius_km"):
-        note = "\nPolmer pri geohashu ne velja – spremljam točno to celico."
+        note = "\nRadij pri geohashu ne velja – spremljam točno to celico."
     await _answer(
         update,
         f"🔲 Geohash <code>{html.escape(geohash)}</code>{detected}\n"
@@ -1317,9 +1318,9 @@ async def _ask_name(update, context, from_callback=False):
         details.append(f"📍 <code>{html.escape(pending['label'])}</code>")
     if pending.get("geohash"):
         details.append(f"🔲 celica <code>{html.escape(pending['geohash'])}</code> "
-                       "(pravokotnik, brez polmera)")
+                       "(pravokotnik, brez radija)")
     elif pending.get("radius_km"):
-        details.append(f"polmer {pending['radius_km']:g} km")
+        details.append(f"radij {pending['radius_km']:g} km")
     if pending.get("ob_name"):
         details.append(f"občina {html.escape(pending['ob_name'])}")
     header = " · ".join(details) if details else "📍 nova lokacija"
@@ -1389,10 +1390,10 @@ async def _commit(update, context, label, from_callback=False, topics=None):
     elif kind == "geohash" or geohash:
         scope = (
             f"celica geohasha <code>{html.escape(geohash or '')}</code> "
-            "(pravokotnik, brez polmera)"
+            "(pravokotnik, brez radija)"
         )
     else:
-        scope = f"polmer {radius_km:g} km"
+        scope = f"radij {radius_km:g} km"
     verb = "Posodobljeno" if same_label else "Dodano"
     await _answer(
         update,
@@ -1476,14 +1477,14 @@ async def picked_radius(update: Update, context: ContextTypes.DEFAULT_TYPE):
     value = query.data.split(":", 1)[1]
     if value == "custom":
         await query.edit_message_text(
-            f"Vpišite polmer v kilometrih (med {MIN_RADIUS_KM:g} in {MAX_RADIUS_KM:g}), npr. 15."
+            f"Vpišite radij v kilometrih (med {MIN_RADIUS_KM:g} in {MAX_RADIUS_KM:g}), npr. 15."
         )
         return RADIUS_CUSTOM
     candidate = context.user_data.get("candidate") or {}
     if value == "obc":
         ob_name = candidate.get("ob_name")
         if not ob_name:
-            await query.edit_message_text("Za to lokacijo ne poznam meje občine. Izberite polmer.")
+            await query.edit_message_text("Za to lokacijo ne poznam meje občine. Izberite radij.")
             return RADIUS
         context.user_data["pending"] = {
             "label": f"Občina {ob_name}",
@@ -1508,12 +1509,12 @@ async def got_custom_radius(update: Update, context: ContextTypes.DEFAULT_TYPE):
         radius_km = float(raw)
     except ValueError:
         await update.effective_message.reply_text(
-            "To ni število. Vpišite polmer v kilometrih, npr. 15."
+            "To ni število. Vpišite radij v kilometrih, npr. 15."
         )
         return RADIUS_CUSTOM
     if not (MIN_RADIUS_KM <= radius_km <= MAX_RADIUS_KM):
         await update.effective_message.reply_text(
-            f"Polmer mora biti med {MIN_RADIUS_KM:g} in {MAX_RADIUS_KM:g} km."
+            f"Radij mora biti med {MIN_RADIUS_KM:g} in {MAX_RADIUS_KM:g} km."
         )
         return RADIUS_CUSTOM
     if context.user_data.get("pending") and not context.user_data.get("candidate"):
@@ -1546,7 +1547,7 @@ def _pending_header(pending):
     label = html.escape(pending.get("label") or "nova lokacija")
     if (pending.get("kind") or "circle") == "obcina":
         return f"📍 <b>{label}</b> · cela občina {html.escape(pending.get('ob_name') or '')}"
-    return f"📍 <b>{label}</b> · polmer {(pending.get('radius_km') or 0):g} km"
+    return f"📍 <b>{label}</b> · radij {(pending.get('radius_km') or 0):g} km"
 
 
 def _topic_keyboard(selected):
@@ -1741,10 +1742,12 @@ def _list_caption(rows):
             f" · {scope}{coords}{kinds}"
         )
     lines.append("")
-    lines.append("Barva se ujema z območjem na zemljevidu, oblika pa pove vrsto: "
-                 "❤️ občina (meja), 🟪 geohash celica, 🟡 območje s polmerom. "
-                 "Odstranitev: /remove &lt;številka&gt; ali gumb spodaj. "
-                 "Vrste dogodkov: /topics.")
+    lines.append(
+        "Barva vsake vrstice se ujema z njenim območjem na zemljevidu, "
+        "oblika pa pove vrsto: ❤️ občina (meja), 🟥 geohash celica, "
+        "🔴 območje z radijem. Odstranitev: /remove &lt;številka&gt; "
+        "ali gumb spodaj. Vrste dogodkov: /topics."
+    )
     return "\n".join(lines)
 
 
