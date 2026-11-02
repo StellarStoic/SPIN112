@@ -73,4 +73,12 @@ conversation states, the map renderer and the deploy host.
   geocoding so place names still win.
 * Never repost incidents: `posted_incidents.json` is authoritative, do not clear
   it or backfill the group.
+* "Večji obseg" alerts are deduped on their **core**, not on the whole payload:
+  `vecji_obseg_core()` keeps municipality + event time + body text with the clock
+  window (`do 17:35`) masked to `do <cas>`; `is_duplicate_incident()` compares
+  those cores, so a running alert whose only change is the window advancing is
+  skipped instead of reposted every 5-minute poll. A changed count, casualty
+  line, place, event time or hazard kind still posts. `posted_vecjiObseg.json`
+  keeps whole objects (legacy entries included) — never rewrite it.
+  `tests/test_vecji_obseg_dedupe.py` covers the tick loop.
 * Keep host names, addresses and account names out of anything pushed or posted.

@@ -97,7 +97,7 @@ __Replace your_telegram_bot_token with your bot token from BotFather and your_te
 ### Files
 ```SPIN112bot.py```: Main script to run the bot.
 ```posted_incidents.json```: Stores IDs of posted incidents to prevent reposting.
-```posted_vecjiObseg.json```: Stores posted "Večji obseg" incidents in plain text as json (this events does not have IDs).
+```posted_vecjiObseg.json```: Stores posted "Večji obseg" incidents (these events have no ID). An alert is posted once and is only posted again when its **core** changes: municipality, event time, and the body text with the constantly rewritten clock window ("… smo do 17:35 …") masked out. A running alert that only moves its window forward no longer repeats every 5 minutes.
 ```.env```: Environment variables (bot token and group ID).
 
 Example Output

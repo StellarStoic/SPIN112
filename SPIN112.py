@@ -612,14 +612,37 @@ def write_posted_vecji_obseg(file_path, incident_list):
     with open(file_path, 'w', encoding='utf-8') as file:
         json.dump(incident_list, file, ensure_ascii=False, indent=4)
         
+# A running "dogodek večjega obsega" is rewritten by the feed on every refresh:
+# only the clock window in the body moves ("… smo do 17:30 … zabeležili več prijav" →
+# "do 17:35" → "do 17:40"), while place, event time and everything else stay the
+# same. Comparing whole objects therefore looked like a brand new incident on every
+# poll and the same alert was posted every 5 minutes. The core of an alert is the
+# municipality, its event time and the text with that moving window masked out.
+_VECJI_WINDOW_RE = re.compile(r"\bdo\s+\d{1,2}[:.]\d{2}\b", re.IGNORECASE)
+_VECJI_SPACES_RE = re.compile(r"\s+")
+
+
+def vecji_obseg_core(incident):
+    """Normalised substance of a vecjiObseg incident, free of the moving clock window."""
+    parts = [str(incident.get("obcinaNaziv") or "").strip().casefold()]
+    for entry in incident.get("besediloList") or []:
+        datum = str(entry.get("datum") or "").strip()
+        text = _VECJI_WINDOW_RE.sub("do <cas>", str(entry.get("besedilo") or ""))
+        text = _VECJI_SPACES_RE.sub(" ", text).strip().casefold()
+        parts.append(datum)
+        parts.append(text)
+    return "\n".join(parts)
+
+
 # Function to compare if two incidents are the same based on content
 def is_duplicate_incident(new_incident, posted_incidents):
     """
-    Check if the new incident is a duplicate by comparing it with each posted incident.
+    Check whether this alert — or the same alert with only its clock window
+    advanced — has already been posted.
     """
+    core = vecji_obseg_core(new_incident)
     for posted_incident in posted_incidents:
-        # Compare the entire JSON object of both incidents
-        if new_incident == posted_incident:
+        if vecji_obseg_core(posted_incident) == core:
             return True
     return False
 
@@ -639,14 +662,15 @@ async def fetch_and_post_vecji_obseg(context: CallbackContext):
         return
 
     for incident in vecji_obseg_data['value']:
-        # Check if the incident has already been posted based on its content
+        obcina = incident.get('obcinaNaziv', 'N/A')
+        # Check if the incident has already been posted based on its core content
         if not is_duplicate_incident(incident, posted_vecji_obseg):
-            logger.info(f"New vecjiObseg incident found: ID {incident}. Posting...")  # Log the new incident found
+            logger.info(f"New vecjiObseg incident found for {obcina}. Posting...")
             await post_vecji_obseg_incidents(context.bot, incident)
             posted_vecji_obseg.append(incident)  # Add the new incident to the list
             write_posted_vecji_obseg(posted_vecji_obseg_file, posted_vecji_obseg)
         else:
-            logger.info(f"Incident ID {incident} is already posted. Skipping.")  # Log if the incident is already posted
+            logger.info(f"VecjiObseg incident for {obcina} is unchanged (only the clock window moved). Skipping.")
             
 # END Večji obseg
 
