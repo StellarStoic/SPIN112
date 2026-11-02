@@ -1,8 +1,8 @@
-"""/contact has to reach the developer, from the menu, the help text and the reply.
+"""/contact reaches the developer through a button, without naming anyone.
 
-The command exists so a user who finds a bug can write to a human without
-digging through the group: the same handle appears in the /help text, in
-Telegram's command menu and in the answer to /contact.
+The reply text stays anonymous ("razvijalec bota"): the account behind it is an
+implementation detail, so this test asserts the URL lives *only* inside the
+inline button and never in the message text or in the help text.
 """
 
 import asyncio
@@ -21,7 +21,6 @@ os.environ["SUBSCRIPTIONS_DB"] = os.path.join(BOT_DIR, "tests", "_contact_tmp.db
 import subscriptions as S  # noqa: E402
 
 CONTACT_URL = "https://t.me/stellarstoic"
-CONTACT_HANDLE = "@StellarStoic"
 
 PASSES = []
 FAILS = []
@@ -48,25 +47,42 @@ def _reply():
     return update.effective_message.text, update.effective_message.kwargs
 
 
-def test_contact_url_is_the_dev_handle():
+def _buttons(markup):
+    return [btn for row in markup.inline_keyboard for btn in row]
+
+
+def test_contact_url_is_configured():
     assert S.DEV_CONTACT_URL == CONTACT_URL, S.DEV_CONTACT_URL
-    assert S.DEV_CONTACT_HANDLE == CONTACT_HANDLE, S.DEV_CONTACT_HANDLE
 
 
-def test_reply_links_the_dev():
+def test_reply_offers_a_url_button():
     text, kwargs = _reply()
     assert text, "handler replied with nothing"
-    assert CONTACT_URL in text, text
-    assert CONTACT_HANDLE in text, text
-    assert '<a href="' + CONTACT_URL + '">' in text, text
+    markup = kwargs.get("reply_markup")
+    assert markup is not None, kwargs
+    buttons = _buttons(markup)
+    assert len(buttons) == 1, buttons
+    assert buttons[0].url == CONTACT_URL, buttons[0].url
+    assert buttons[0].text, "button needs a label"
     assert kwargs.get("parse_mode") == "HTML", kwargs
-    assert kwargs.get("disable_web_page_preview") is True, kwargs
 
 
-def test_help_mentions_the_contact_command():
+def test_reply_does_not_name_the_developer():
+    text, kwargs = _reply()
+    assert isinstance(text, str) and text
+    lowered = text.lower()
+    assert CONTACT_URL not in text
+    assert "stellarstoic" not in lowered
+    assert "razvijal" in lowered, text
+    # the URL survives only inside the button
+    assert _buttons(kwargs["reply_markup"])[0].url == CONTACT_URL
+
+
+def test_help_mentions_the_command_without_the_handle():
     assert "/contact" in S.HELP_TEXT
-    assert CONTACT_URL in S.HELP_TEXT
-    assert CONTACT_HANDLE in S.HELP_TEXT
+    assert "stellarstoic" not in S.HELP_TEXT.lower()
+    assert CONTACT_URL not in S.HELP_TEXT
+    assert "kontakt razvijalca" in S.HELP_TEXT.lower()
 
 
 def test_handler_is_registered():

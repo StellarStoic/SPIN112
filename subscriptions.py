@@ -836,8 +836,9 @@ def render_subscriptions_map(rows, path, width=1000, height=760):
 
 
 # Where users should write about the bot itself (bugs, ideas, questions).
+# Only ever surfaced through the /contact button — the text of that message names
+# nobody, so the account behind it can be changed without touching user-visible copy.
 DEV_CONTACT_URL = "https://t.me/stellarstoic"
-DEV_CONTACT_HANDLE = "@StellarStoic"
 
 HELP_TEXT = (
     "<b>SPIN112 – obveščanje po lokaciji</b>\n\n"
@@ -871,9 +872,8 @@ HELP_TEXT = (
     "<b>/remove &lt;številka&gt;</b> – odstrani lokacijo s tega seznama; bot "
     "vedno še enkrat vpraša za potrditev.\n"
     "<b>/stop</b> – izbriše vse vaše lokacije (z potrditvijo).\n"
-    "<b>/contact</b> – kontakt razvijalca bota "
-    "(<a href=\"" + DEV_CONTACT_URL + "\">" + DEV_CONTACT_HANDLE + "</a>), "
-    "za vprašanja, predloge in prijave napak.\n"
+    "<b>/contact</b> – kontakt razvijalca bota (vprašanja, predlogi in prijave "
+    "napak).\n"
     "<b>/cancel</b> – prekini trenutni korak. /help – ta pomoč.\n\n"
     "<b>Imena lokacij</b>\n"
     "Vsaki lokaciji lahko daste svoje ime (»Doma«, »Služba«, »Vikend«). Ko "
@@ -960,13 +960,20 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Who to write to about the bot itself. Works in private chat and in groups."""
+    """Who to write to about the bot itself. Works in private chat and in groups.
+
+    The message stays anonymous on purpose ("razvijalec bota", no handle): the
+    account behind the button can be swapped without touching user-visible text.
+    """
     await update.effective_message.reply_text(
         "<b>Kontakt</b>\n"
-        "Bot SPIN112 razvija in vzdržuje " + DEV_CONTACT_HANDLE + ".\n"
-        "Vprašanja, predlogi in prijave napak: "
-        '<a href="' + DEV_CONTACT_URL + '">' + DEV_CONTACT_URL + "</a>",
+        "Za vprašanja, predloge in prijave napak pišite razvijalcu bota – "
+        "odpre se pogovor.\n\n"
+        "Prosimo, da v sporočilu navedete, kaj ste počeli in kaj se je zgodilo.",
         parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✉️ Kontaktiraj razvijalca", url=DEV_CONTACT_URL)],
+        ]),
         disable_web_page_preview=True,
     )
 
