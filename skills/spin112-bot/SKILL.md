@@ -18,7 +18,10 @@ conversation states, the map renderer and the deploy host.
 2. Change `subscriptions.py` for anything user-facing about following places;
    touch `SPIN112.py` only where it calls into it (`notify_radius_subscribers`,
    `BotCommand` list, job queue).
-3. Keep new user-visible strings Slovenian and consistent with `HELP_TEXT`.
+3. Keep new user-visible strings Slovenian and consistent with `HELP_TEXT`. The
+   Slovenian word for radius is **radij** (`radija`, `radijem`, `radiji`), never
+   `polmer`; help links to `https://en.wikipedia.org/wiki/Geohash`, not
+   `geohash.org`.
 4. Run every test file (they are plain scripts, no pytest):
 
    ```sh
