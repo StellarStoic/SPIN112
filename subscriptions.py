@@ -835,6 +835,10 @@ def render_subscriptions_map(rows, path, width=1000, height=760):
     return path
 
 
+# Where users should write about the bot itself (bugs, ideas, questions).
+DEV_CONTACT_URL = "https://t.me/stellarstoic"
+DEV_CONTACT_HANDLE = "@StellarStoic"
+
 HELP_TEXT = (
     "<b>SPIN112 – obveščanje po lokaciji</b>\n\n"
     "Nastavite mesta, vasi ali cele občine, ki vas zanimajo, in vsako novo "
@@ -867,6 +871,9 @@ HELP_TEXT = (
     "<b>/remove &lt;številka&gt;</b> – odstrani lokacijo s tega seznama; bot "
     "vedno še enkrat vpraša za potrditev.\n"
     "<b>/stop</b> – izbriše vse vaše lokacije (z potrditvijo).\n"
+    "<b>/contact</b> – kontakt razvijalca bota "
+    "(<a href=\"" + DEV_CONTACT_URL + "\">" + DEV_CONTACT_HANDLE + "</a>), "
+    "za vprašanja, predloge in prijave napak.\n"
     "<b>/cancel</b> – prekini trenutni korak. /help – ta pomoč.\n\n"
     "<b>Imena lokacij</b>\n"
     "Vsaki lokaciji lahko daste svoje ime (»Doma«, »Služba«, »Vikend«). Ko "
@@ -950,6 +957,18 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _private_only(update):
         return await _refuse_group(update, context)
     await update.effective_message.reply_text(HELP_TEXT, parse_mode="HTML")
+
+
+async def cmd_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Who to write to about the bot itself. Works in private chat and in groups."""
+    await update.effective_message.reply_text(
+        "<b>Kontakt</b>\n"
+        "Bot SPIN112 razvija in vzdržuje " + DEV_CONTACT_HANDLE + ".\n"
+        "Vprašanja, predlogi in prijave napak: "
+        '<a href="' + DEV_CONTACT_URL + '">' + DEV_CONTACT_URL + "</a>",
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
 
 
 _NUMBER_RE = re.compile(r"^[+-]?\d+(?:[.,]\d+)?$")
@@ -1930,6 +1949,7 @@ def build_handlers():
         conversation,
         CommandHandler("start", cmd_start),
         CommandHandler("help", cmd_help),
+        CommandHandler("contact", cmd_contact),
         CommandHandler("list", cmd_list),
         CommandHandler("remove", cmd_remove),
         CommandHandler("stop", cmd_stop),

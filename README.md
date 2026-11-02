@@ -32,6 +32,7 @@ group / topic / keyword posting is unaffected.
 | `/remove` | Delete one followed location (with confirmation). |
 | `/stop` | Delete every followed location and stop the DMs. |
 | `/help` | Full instructions. |
+| `/contact` | Contact the developer: [@StellarStoic](https://t.me/stellarstoic) for questions, ideas and bug reports. |
 
 **Incident kinds (topics).** After the location is chosen, the bot offers the kinds
 it can filter on — `Epidemije`, `Jedrska ali radiološka nevarnost`,

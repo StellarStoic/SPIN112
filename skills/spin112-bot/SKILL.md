@@ -57,6 +57,10 @@ conversation states, the map renderer and the deploy host.
   3 per row, `HELP_TEXT` and `README.md` phrase them to the user.
 * Topic filter keys are the exact group-topic strings; an empty selection means
   "all kinds", and incidents with an unknown kind are never filtered out.
+* `/contact` replies with `DEV_CONTACT_URL` (`https://t.me/stellarstoic`) and is
+  the one command that also answers inside groups. Take the URL from the
+  constant — `HELP_TEXT` and `tests/test_contact.py` both read it, so changing
+  the developer handle is a one-line edit.
 * Geohash subscriptions are **rectangles, not circles**: the row stores
   `kind = 'geohash'`, `radius_km = 0` and the hash, and `match_subscribers()`
   tests incidents with `point_in_box(lat, lon, geohash_bbox(gh))`; the map draws

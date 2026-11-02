@@ -1194,6 +1194,7 @@ async def register_bot_commands(application):
             BotCommand("stop", "Izbriši vse lokacije in prenehaj s sporočili"),
             BotCommand("topics", "Izberi vrste dogodkov za lokacijo"),
             BotCommand("help", "Podrobna navodila"),
+            BotCommand("contact", "Kontakt razvijalca bota"),
         ])
     except Exception as exc:  # network hiccup must not stop the bot
         logger.warning(f"Could not register bot commands: {exc}")
