@@ -34,6 +34,15 @@ group / topic / keyword posting is unaffected.
 | `/help` | Full instructions. |
 | `/contact` | Contact the developer — the message has a button that opens a chat with them (questions, ideas, bug reports). |
 
+**Talking to the developer without a command.** A user can just type at the bot in
+private: any message that is not a command (and not part of a `/track` step) is
+copied to the developer's chat with the sender's name, `@username` and numeric id
+attached, and the user gets a short confirmation. Photos, voice notes, videos and
+documents are forwarded as they are. The target chat is the `DEV_CHAT_ID`
+environment variable, so the developer account can change without touching code;
+leave it unset and the relay is off. Messages the developer sends to the bot
+himself are never relayed.
+
 **Incident kinds (topics).** After the location is chosen, the bot offers the kinds
 it can filter on — `Epidemije`, `Jedrska ali radiološka nevarnost`,
 `Športne aktivnosti`, `Požar, eksplozija`, `Prometna nesreča`, hazmat,

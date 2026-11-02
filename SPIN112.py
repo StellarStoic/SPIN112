@@ -1211,6 +1211,11 @@ def main():
     for handler in subscriptions.build_handlers():
         application.add_handler(handler)
 
+    # Group 1: plain "write to the bot" messages. Commands and every conversation
+    # step are claimed by group 0 first, so only leftovers reach the developer.
+    for handler in subscriptions.build_relay_handlers():
+        application.add_handler(handler, group=1)
+
     # Run fetching and posting for regular incidents and vecjiObseg incidents
     job_queue.run_repeating(auto_fetch_and_post, interval=80, first=0)
     job_queue.run_repeating(fetch_and_post_vecji_obseg, interval=80, first=60)  # Run vecjiObseg fetch every 150 seconds, offset by 60 seconds

@@ -62,6 +62,7 @@ conversation states, the map renderer and the deploy host.
   groups. The reply text stays anonymous ("razvijalec bota") — do **not** print
   the handle or the URL as text; the account lives only behind the button, which
   is why `tests/test_contact.py` asserts both are absent from the message.
+* Plain private messages are relayed to the developer: `cmd_user_message` copies the text (or forwards the photo/voice/document) to `dev_chat_id()` — the `DEV_CHAT_ID` env var, `0` meaning relay off — prefixed with the sender's name, `@username` and id so the developer can answer. Register `build_relay_handlers()` with `group=1`: group 0 already owns commands and every conversation step, so `/track` input is never mistaken for a message. The confirmation to the user names nobody, the handler is a no-op when the sender *is* the developer, and `tests/test_relay.py` covers text, media, HTML escaping, truncation, the send-failure path and the missing-config path.
 * Geohash subscriptions are **rectangles, not circles**: the row stores
   `kind = 'geohash'`, `radius_km = 0` and the hash, and `match_subscribers()`
   tests incidents with `point_in_box(lat, lon, geohash_bbox(gh))`; the map draws

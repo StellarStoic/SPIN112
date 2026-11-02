@@ -840,6 +840,22 @@ def render_subscriptions_map(rows, path, width=1000, height=760):
 # nobody, so the account behind it can be changed without touching user-visible copy.
 DEV_CONTACT_URL = "https://t.me/stellarstoic"
 
+# Where a plain "write to the bot" message is relayed. It is the developer's own
+# chat id (they must have started the bot once), kept in .env so it never shows
+# up in the repo or in any user-visible text. Empty = relay off and /contact is
+# the only way to reach a human.
+DEV_CHAT_ID_ENV = "DEV_CHAT_ID"
+MAX_RELAY_CHARS = 3500
+
+
+def dev_chat_id():
+    """The developer's chat id from the environment, or 0 when unset/invalid."""
+    try:
+        return int((os.environ.get(DEV_CHAT_ID_ENV) or "").strip())
+    except (TypeError, ValueError):
+        return 0
+
+
 HELP_TEXT = (
     "<b>SPIN112 – obveščanje po lokaciji</b>\n\n"
     "Nastavite mesta, vasi ali cele občine, ki vas zanimajo, in vsako novo "
@@ -874,6 +890,8 @@ HELP_TEXT = (
     "<b>/stop</b> – izbriše vse vaše lokacije (z potrditvijo).\n"
     "<b>/contact</b> – kontakt razvijalca bota (vprašanja, predlogi in prijave "
     "napak).\n"
+    "<b>Navadno sporočilo</b> – če botu napišete kar tako, brez ukaza, "
+    "sporočilo posredujem razvijalcu (skupaj z vašim imenom, da ve, od koga je).\n"
     "<b>/cancel</b> – prekini trenutni korak. /help – ta pomoč.\n\n"
     "<b>Imena lokacij</b>\n"
     "Vsaki lokaciji lahko daste svoje ime (»Doma«, »Služba«, »Vikend«). Ko "
@@ -976,6 +994,107 @@ async def cmd_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]),
         disable_web_page_preview=True,
     )
+
+
+def relay_header(user, message):
+    """First lines the developer sees: who wrote, from which chat, and what."""
+    name = " ".join(
+        part for part in (
+            getattr(user, "first_name", None), getattr(user, "last_name", None)
+        ) if part
+    ).strip() or "neznan uporabnik"
+    username = getattr(user, "username", None)
+    who = f"@{username} (id {user.id})" if username else f"brez uporabniškega imena (id {getattr(user, 'id', '?')})"
+    lines = [
+        "📨 <b>Sporočilo uporabnika</b>",
+        f"Ime: {html.escape(name)}",
+        f"Uporabnik: {html.escape(who)}",
+    ]
+    chat = getattr(message, "chat", None)
+    if chat is not None and getattr(chat, "type", "private") != "private":
+        lines.append(f"Klepet: {html.escape(str(getattr(chat, 'type', '?')))} {getattr(chat, 'id', '?')}")
+    if message.text:
+        body = message.text[:MAX_RELAY_CHARS]
+        lines.append("")
+        lines.append(html.escape(body))
+    else:
+        kind = "sporočilo"
+        for attr, label in (("photo", "fotografija"), ("voice", "glasovno sporočilo"),
+                            ("video", "video"), ("document", "datoteka"),
+                            ("sticker", "nalepka"), ("location", "lokacija"),
+                            ("audio", "avdio"), ("video_note", "video sporočilo")):
+            if getattr(message, attr, None):
+                kind = label
+                break
+        caption = getattr(message, "caption", None)
+        lines.append("")
+        lines.append(f"[{kind}]" + (f" {html.escape(caption[:MAX_RELAY_CHARS])}" if caption else ""))
+    return "\n".join(lines)
+
+
+async def cmd_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Relay a plain message from a user to the developer, then confirm to the user.
+
+    This is the "just write to the bot" path: no command, no menu — the text (or
+    photo, voice note …) is copied to the developer's chat with the sender's name
+    and id attached, and the user gets a short confirmation. Nothing about the
+    developer is revealed in that confirmation, so a changed dev account stays a
+    .env edit.
+    """
+    message = update.effective_message
+    if message is None:
+        return
+    dev_id = dev_chat_id()
+    user = update.effective_user
+    if user is not None and dev_id and user.id == dev_id:
+        return  # the developer talking to their own bot — nothing to relay
+    if not dev_id:
+        await message.reply_text(
+            "Tega sporočila ne morem posredovati. Za stik z razvijalcem bota "
+            "uporabite /contact.",
+            parse_mode="HTML",
+        )
+        return
+
+    try:
+        await context.bot.send_message(
+            chat_id=dev_id,
+            text=relay_header(user, message),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        if not message.text:
+            # keep the photo/document/voice note itself; forwarding works for
+            # every type and spares us download + re-upload
+            await message.forward(chat_id=dev_id)
+    except TelegramError as exc:
+        logger.warning("Relay to developer failed: %s", exc)
+        await message.reply_text(
+            "Sporočila trenutno ne morem poslati razvijalcu. Poskusite /contact.",
+            parse_mode="HTML",
+        )
+        return
+
+    await message.reply_text(
+        "✅ Sporočilo sem posredoval razvijalcu bota. Hvala!",
+    )
+
+
+def build_relay_handlers():
+    """Catch-all for plain private messages, meant for a later handler group.
+
+    Register it with ``group=1``: commands and every conversation step live in
+    group 0 and claim their updates first, so only text that nothing else wanted
+    (and every photo/voice note) ends up at the developer.
+    """
+    return [
+        MessageHandler(
+            filters.ChatType.PRIVATE
+            & ~filters.COMMAND
+            & ~filters.UpdateType.EDITED_MESSAGE,
+            cmd_user_message,
+        ),
+    ]
 
 
 _NUMBER_RE = re.compile(r"^[+-]?\d+(?:[.,]\d+)?$")
